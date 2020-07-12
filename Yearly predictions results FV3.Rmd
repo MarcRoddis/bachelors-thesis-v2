@@ -1,0 +1,2872 @@
+---
+title: "Yearly predictions results FV3"
+author: "Marc Roddis"
+date: "7/12/2020"
+output: html_document
+---
+
+```{r chunk1, include=FALSE}
+library(RCurl)
+library(tidyverse)
+library(styler)
+library(gridExtra)
+library(cowplot)
+library("NADA")
+library(truncreg)
+library(truncnorm)
+library(censReg)
+load("july12thFV3.RData")
+knitr::opts_chunk$set(echo=FALSE)
+```
+
+
+
+```{r chunk2, include=FALSE}
+# This code chunk generates all the censored data
+get_sim_data = function(true_beta153year, sample_size, sd28_153) { 
+  noise153 = rnorm(n = sample_size*15, mean = 0, sd = 0.1) 
+  noise28 = rnorm(n = sample_size*15, mean = 0, sd = sd28_153) 
+  year = rep(years, sample_size)
+  cb153 = -2.91 + true_beta153year * year + noise153 
+  cb28 = -3.18 + 0.79 * cb153 + noise28
+  sim_df = data.frame(year,cb28,cb153) 
+  all_sim_data = as_tibble(sim_df)
+  return(all_sim_data)
+} 
+
+get_cens_data = function(true_beta153year, sample_size, sd28_153, cprop) { 
+  noise153 = rnorm(n = sample_size*15, mean = 0, sd = 0.1) 
+  noise28 = rnorm(n = sample_size*15, mean = 0, sd = sd28_153) 
+  year = rep(years, sample_size)
+  cb153 = -2.91 + true_beta153year * year + noise153 
+  cb28 = -3.18 + 0.79 * cb153 + noise28
+  data_df = data.frame(year,cb28,cb153) 
+  data_tib = as_tibble(data_df)
+  cb28_cprop <- quantile(data_tib$cb28,probs = cprop, names=FALSE)  
+  cens_data_tib <- data_tib %>%
+      mutate(cb28 = pmax(cb28, cb28_cprop ) )
+  return(cens_data_tib)
+}
+```
+
+
+```{r chunk3, include=FALSE}
+
+get_all_results_beta28year = function(estimates_df, true_beta153year) {
+  true_beta28year <- 0.79 * true_beta153year # from real data: beta28_153 = 0.79
+  mse_beta_vector = mean( (estimates_df - true_beta28year)^2 )
+  bias_sq_beta_vector = (mean(estimates_df) - true_beta28year)^2
+  variance_beta_vector = var(estimates_df)
+  all_results_beta28year[1] <- mse_beta_vector
+  all_results_beta28year[2] <- bias_sq_beta_vector
+  all_results_beta28year[3] <- variance_beta_vector
+  data.frame(all_results_beta28year)
+} 
+
+```
+
+
+```{r chunk4, include=FALSE}
+get_yearly_estimates_best = function(n_iter, all_sim_data) {
+  for (iter in 1:n_iter) {
+    data_tib = all_sim_data[[iter]] 
+    best_yearly_mean <- data_tib %>%
+      group_by(year) %>% # do not censor the data at all
+      summarise_at(vars(cb28, cb153), mean  ) %>%
+      ungroup()
+    best_fit = lm(best_yearly_mean$cb28 ~ best_yearly_mean$year)
+    
+    estimates_best[, iter] = predict(best_fit)
+    data.frame(estimates_best)
+  }
+  return(estimates_best)
+}
+```
+
+
+```{r chunk5, eval=FALSE}
+
+get_yearly_estimates_omit = function(n_iter, all_cens_data) {
+  for (iter in 1:n_iter) {
+    data_tib = all_cens_data[[iter]]
+    omit_yearly_mean <- data_tib %>%
+      filter(cb28 > min(cb28) ) %>% # remove censored data
+      group_by(year) %>%
+      summarise_at(vars(cb28, cb153), mean  ) %>%
+      ungroup()
+    omit_fit = lm(omit_yearly_mean$cb28 ~ omit_yearly_mean$year, na.action = na.omit)
+    
+    estimates_omit[, iter] = predict(omit_fit)
+    data.frame(estimates_omit)
+  }
+  return(estimates_omit)
+}
+```
+
+```{r chunk6, include=FALSE}
+
+get_yearly_estimates_subst2 = function(n_iter, all_cens_data) {
+
+  for (iter in 1:n_iter) {
+    data_tib = all_cens_data[[iter]]
+    subst2_yearly_mean <- data_tib %>%
+      mutate(cb28 = ifelse(cb28 == min(cb28), min(cb28) - log(sqrt(2) ), cb28)) %>% 
+      # substitute censored data with LOD/sqrt(2)
+      group_by(year) %>%
+      summarise_at(vars(cb28, cb153), mean  ) %>%
+      ungroup()
+    subst2_fit = lm(subst2_yearly_mean$cb28 ~ subst2_yearly_mean$year)
+  
+    estimates_subst2[, iter] = predict(subst2_fit)
+    data.frame(estimates_subst2)
+  }
+  return(estimates_subst2)
+}
+
+```
+
+
+
+```{r chunk7, include=FALSE}
+
+get_yearly_estimates_subst4 = function(n_iter, all_cens_data) {
+
+  for (iter in 1:n_iter) {
+    data_tib = all_cens_data[[iter]]
+    subst4_yearly_mean <- data_tib %>%
+      mutate(cb28 = ifelse(cb28 == min(cb28), min(cb28) - log(2), cb28)) %>% 
+      # substitute censored data with LOD/2
+      group_by(year) %>%
+      summarise_at(vars(cb28, cb153), mean  ) %>%
+      ungroup()
+    subst4_fit = lm(subst4_yearly_mean$cb28 ~ subst4_yearly_mean$year)
+  
+    estimates_subst4[, iter] = predict(subst4_fit)
+    data.frame(estimates_subst4)
+  }
+  return(estimates_subst4)
+}
+
+```
+
+
+
+```{r chunk8, include=FALSE}
+
+
+get_yearly_estimates_censReg1 = function(n_iter, all_cens_data) {
+
+  for (iter in 1:n_iter) {
+    data_cens = all_cens_data[[iter]]
+  
+    censReg1_fit1 <- censReg( data_cens$cb28~data_cens$cb153, left = min(data_cens$cb28))
+    censReg1_alpha <- coef(censReg1_fit1, logSigma =FALSE)[1]
+    censReg1_beta_153 <- coef(censReg1_fit1, logSigma =FALSE)[2]
+    censReg1_logSigma <- coef(censReg1_fit1, logSigma =FALSE)[3]
+
+    censReg1_yearly_mean <- data_cens %>%
+      mutate(cb28 = ifelse(cb28 == min(cb28), etruncnorm(a=-Inf, b=min(cb28), mean=censReg1_alpha + censReg1_beta_153 * cb153, sd=censReg1_logSigma) , cb28) ) %>%  
+      group_by(year) %>%
+      summarise_at(vars(cb28, cb153), mean  ) %>%
+      ungroup()
+  
+    censReg1_fit_lm = lm(censReg1_yearly_mean$cb28 ~ censReg1_yearly_mean$year)
+
+    estimates_censReg1[, iter] = predict(censReg1_fit_lm)
+    data.frame(estimates_censReg1)
+  }
+  return(estimates_censReg1)
+}
+
+```
+
+
+```{r chunk9, include=FALSE}
+
+
+get_yearly_estimates_censReg1naive = function(n_iter, all_cens_data) {
+
+  for (iter in 1:n_iter) {
+    data_cens = all_cens_data[[iter]]
+
+    censReg1_fit1 <- censReg( data_cens$cb28~data_cens$cb153, left = min(data_cens$cb28) )
+    censReg1_alpha <- coef(censReg1_fit1, logSigma =FALSE)[1]
+    censReg1_beta_153 <- coef(censReg1_fit1, logSigma =FALSE)[2]
+    censReg1_logSigma <- coef(censReg1_fit1, logSigma =FALSE)[3]
+
+    censReg1naive_yearly_mean <- data_cens %>%
+      mutate(cb28 = ifelse(cb28 == min(cb28), censReg1_alpha + censReg1_beta_153 * cb153, cb28) ) %>%  
+      group_by(year) %>%
+      summarise_at(vars(cb28, cb153), mean  ) %>%
+      ungroup()
+  
+    censReg1naive_fit_lm = lm(censReg1naive_yearly_mean$cb28 ~ censReg1naive_yearly_mean$year)
+  
+    estimates_censReg1naive[, iter] = predict(censReg1naive_fit_lm)
+    data.frame(estimates_censReg1naive)
+  }
+  return(estimates_censReg1naive)
+}
+
+```
+  
+```{r chunk10, include=FALSE}
+
+get_yearly_estimates_censReg2 = function(n_iter, all_cens_data) {
+
+  for (iter in 1:n_iter) {
+    data_cens = all_cens_data[[iter]]    
+
+    censReg2_fit1 <- censReg( data_cens$cb28~data_cens$cb153 + data_cens$year, left = min(data_cens$cb28))
+    censReg2_alpha <- coef(censReg2_fit1)[1]
+    censReg2_beta_153 <- coef(censReg2_fit1)[2]
+    censReg2_beta_year <- coef(censReg2_fit1)[3]
+    censReg2_logSigma <- coef(censReg2_fit1, logSigma =FALSE)[4]
+
+    censReg2_yearly_mean <- data_cens %>%
+      mutate(cb28 = ifelse(cb28 == min(cb28), etruncnorm(a=-Inf, b= min(cb28), mean=censReg2_alpha + censReg2_beta_153 * cb153 + censReg2_beta_year * year, sd=censReg2_logSigma) , cb28) ) %>%  
+      group_by(year) %>%
+      summarise_at(vars(cb28, cb153), mean  ) %>%
+      ungroup()
+  
+    censReg2_fit_lm = lm(censReg2_yearly_mean$cb28 ~ censReg2_yearly_mean$year)
+    
+    estimates_censReg2[, iter] = predict(censReg2_fit_lm)
+    data.frame(estimates_censReg2)
+  }
+  return(estimates_censReg2)
+}
+```
+
+
+### Results
+
+#### Estimation of the regression coefficient `beta28year`
+
+Our first goal will be to screen our 11 methods for the estimation of `beta28year` to determine which methods we will use in our main analysis in a later section.   We will assess these estimates from their MSE, squared-bias and variance in each case.  
+
+We first choose parameter values for this screening study: cprop = 0.3, beta153year = -0.02, sd28_153= 0.3.  These values for cprop and beta153year are equal to our estimates from our real dataset `pcb.csv`, whereas this value for sd28_153 is equal to the mean of two estimates: one which is unconditional, and a second which is conditional on the variable `year`. 
+
+##### Evaluation of methods for smaller sample sizes
+
+We will first obtain results from datasets with different sample sizes in order to decide an appropriate sample size for all our subsequent work.    Our real dataset has approximately 100 observations per year for CB28 and CB153 from herring in years 2003-2017.  However these observations are from various locations and have differences for various other variables such as age, fat-percentage etc., which means that any statistical analysis which controls for such variables would have a smaller sample size.  We will test sample sizes that differ by a factor of 2:  we do this by generating datasets by simulation using 10000 iterations, with sample sizes 50, 25, 12 and 6 respectively.   The squared-bias of the estimates of `beta28year` from all 11 methods and all 4 sample sizes is shown below; note that all values shown in the table are 100000 times bigger than the actual values (to make them easier to read and compare).  The column names `bias_ss50`, `bias_ss25`, ... denote sample sizes 50, 25, ... respectively.  
+
+```{r chunk11, eval=FALSE}
+# round(beta_table_all11_cprop03_beta002_ss25_sd03_niter10000*100000, 5)
+# round(beta_table_all11_cprop03_beta002_ss12_sd03_niter10000*100000, 5)
+# round(beta_table_all11_cprop03_beta002_ss6_sd03_niter10000*100000, 5)
+beta_table_all11_cprop03_beta002_ss50_sd03_niter10000 <- beta_table_all11_cprop03_beta002_ss50_sd03
+bias_ss50_vec <- beta_table_all11_cprop03_beta002_ss50_sd03_niter10000[,2]
+bias_ss25_vec <- beta_table_all11_cprop03_beta002_ss25_sd03_niter10000[,2]
+bias_ss12_vec <- beta_table_all11_cprop03_beta002_ss12_sd03_niter10000[,2]
+bias_ss6_vec <- beta_table_all11_cprop03_beta002_ss6_sd03_niter10000[,2]
+bias_all_ss_df <- data.frame(cbind(bias_ss50_vec, bias_ss25_vec, bias_ss12_vec, bias_ss6_vec))
+rownames(bias_all_ss_df) <- c("omit", "subst2", "subst1", "censReg1", "censReg2", "censReg0impute", "best", "subst4", "censReg1naive", "subst2lmimpute", "omitlmimpute")
+colnames(bias_all_ss_df) <- c("bias_ss50", "bias_ss25", "bias_ss12", "bias_ss6")
+round(bias_all_ss_df*(10^7), 4)
+```
+
+The following table below is the same as the previous one, except that it shows the variance of the estimates.  
+
+```{r chunk12, eval=FALSE}
+# round(beta_table_all11_cprop03_beta002_ss25_sd03_niter10000*100000, 5)
+# round(beta_table_all11_cprop03_beta002_ss12_sd03_niter10000*100000, 5)
+# round(beta_table_all11_cprop03_beta002_ss6_sd03_niter10000*100000, 5)
+variance_ss50_vec <- beta_table_all11_cprop03_beta002_ss50_sd03_niter10000[,3]
+variance_ss25_vec <- beta_table_all11_cprop03_beta002_ss25_sd03_niter10000[,3]
+variance_ss12_vec <- beta_table_all11_cprop03_beta002_ss12_sd03_niter10000[,3]
+variance_ss6_vec <- beta_table_all11_cprop03_beta002_ss6_sd03_niter10000[,3]
+variance_all_ss_df <- data.frame(cbind(variance_ss50_vec, variance_ss25_vec, variance_ss12_vec, variance_ss6_vec))
+rownames(variance_all_ss_df) <- c("omit", "subst2", "subst1", "censReg1", "censReg2", "censReg0impute", "best", "subst4", "censReg1naive", "subst2lmimpute", "omitlmimpute")
+colnames(variance_all_ss_df) <- c("variance_ss50", "variance_ss25", "variance_ss12", "variance_ss6")
+round(variance_all_ss_df*(10^7), 4)
+```
+
+Allowing for random error from using only 10000 iterations, we can conclude that the squared-bias is independent of sample size, whereas the variance is inversely proportional sample size.  Moreover since the bias_variance decomposition $ MSE = Bias^2 + Variance$, always holds, we need not look at the MSE values for the purpose of choosing sample size.  
+
+We find in additional experiments (details not shown) that the standard error of the estimates is inversely proportional to the square root of the number of simulation iterations, so we have three factors to balance: 
+
+1. We want our results to be potentially applicable for real data.
+
+2. We want sample size to be sufficiently large to avoid MSE being dominated by variance alone.
+
+3. We want the number of iterations to be sufficiently large that our estimates have sufficiently low standard error.
+
+We therefore decide to use sample size = 12 for all of our subsequent experiments.   
+
+
+```{r chunk13}
+round(beta_table_all11_cprop03_beta002_ss50_sd03*100000, 5)
+round(beta_table_all11_cprop03_beta002_ss25_sd03*100000, 5)
+round(beta_table_all11_cprop03_beta002_ss12_sd03*100000, 5)
+round(beta_table_all11_cprop03_beta002_ss6_sd03*100000, 5)
+
+```
+
+##### Selection of censoring methods for further study
+
+We will now use simulations with just 1000 iterations for all 10 methods (and also for our reference method `best`) to estimate `beta28year` for four sets of parameter values: 
+
+beta28year = -0.02 is held fixed.
+
+a "low" and a "high" value for each of `cprop` and `sd28_153` are used.  Concretely: (0.1, 0.1), (0.7, 0.1), (0.1, 0.5) and (0.7, 0.5) were used for (cprop, sd28_153) respectively.
+
+The following four tables show the MSE, squared-bias, and variance of estimates of `beta28year` from all 11 methods, for the four sets of parameter values, respectively.
+
+We see that there is a much bigger difference between different methods in the amount of bias than in the amount of variance.   We will therefore focus primarily on the results for bias; we will use terms such as high and low to compare the bias from different methods.  We see that the amount of bias for:
+
+`best` serves as a reference value; a gold standard that we compare the other methods with.
+
+`omit` is high for (0.1, 0.1) and (0.1, 0.5), and is very high for (0.7, 0.1) and (0.7, 0.5).  It makes sense that there is higher bias with higher proportion of censored values since a higher proportion of the data has been omitted.  Moreover, these generally high values are commensurate with our prior expectations (ref: Helsel's book) that `omit` is a poor method, so we will not study this method further.
+
+Very high for: `subst1` for (0.7, 0.1) and (0.7, 0.5); `subst2` for (0.7, 0.5); `subst4` for (0.1, 0.1) and (0.7, 0.1).  However, all three substitution methods also have low bias for at least one set of parameter values.  This is intriguing and merits further investigation.
+
+Very low for: `censReg1`, `censReg2` and `censReg0impute` for all four parameter value sets.
+
+Highest of all four censReg methods for all four parameter sets for `censReg1naive`. This illustrates the necessity of conditioning on both the cb153 value and the condition cb28 < cb28_cprop by using a truncated normal distribution, and verifies the results we presented in our previous chapter on mathematical theory.    `censReg1`, `censReg2` and `censReg0impute` all do this, whereas in contrast, `censReg1naive` conditions solely on the cb153 value, and thus uses a (non-truncated) normal distribution;  this results in significant bias because cb28 values can be erroneously imputed to be higher than `cb28_cprop`.   Consequently we will not discuss censReg1naive any further: it has served its purpose in showing the importance of conditioning oth the cb153 value and the condition cb28 < cb28_cprop.
+
+
+The hybrid methods `subst2lmimpute` and `omitlmimpute` 
+first use substitution and omission as in `subst2` and `omit` respectively,  followed by imputation.  Therefore  `subst2lmimpute` should be compared with `subst2`, and `omitlmimpute` with `omit`.  `subst2lmimpute` has higher bias (and also MSE) than `subst2` for all parameter value sets, and `omitlmimpute` has higher bias than `omit` for all sets except (0.1, 0.5).  We have already rejected the `omit` method so we must also reject `omitlmimpute` since it performs no better than `omit`.  Similarly we reject `subst2lmimpute`, since this method performed worse than `subst2` in all four cases.
+
+In summary, we have rejected 4 of our 10 methods.  We will limit our attention to six methods for all our subsequent work: the three substitution methods `subst1`, `subst2`, `subst4`, and the three censReg methods `censReg1`, `censReg2` and `censReg0impute`.  We will use `best` as our reference method throughout.
+
+```{r chunk14}
+round(beta_table_all11_cprop01_beta002_ss12_sd01*100000, 5)
+round(beta_table_all11_cprop07_beta002_ss12_sd01*100000, 5)
+round(beta_table_all11_cprop01_beta002_ss12_sd05*100000, 5)
+round(beta_table_all11_cprop07_beta002_ss12_sd05*100000, 5)
+```
+
+
+#### Evaluation of methods for larger absolute values of `beta28year`
+
+We will now focus our six chosen methods  `subst1`, `subst2`, `subst4`, `censReg1`, `censReg2`, `censReg0impute`.  We will use these methods to estimate `beta28year` from four simulations that use the same parameter values ss = 12, cprop = 0.3, sd28_153 = 0.3, n_iter = 10000 as before.  We will use the four `cb153year` parameter values -0.02, -0.04, -0.08, -0.16 in these four simulations, respectively.  The results from the simulations are shown in the four tables below.
+
+We see that for these parameters value sets, censReg method give estimates that have much lower bias, in general.   The `subst1` method is designed as a reference that gives biased estimates, since it substitutes cb28 values that are observed to be below LOD with the LOD value itself, so the substituted values will always be larger than the real values.  Moreover, we have chosen to maintain a constant LOD level for all years of the same dataset.   We are also simulating cb28 and cb153 data using a linear (degree 1 polynomial) function with a negative slope and a fixed constant (intercept) term. This means that the cb28 values decrease faster with years for larger values of abs(beta153year).  This all means that it is an inevitable consequence of our design that the bias from `subst1` increases as abs(beta153year) increases, which is precisely what we see in these results.    
+
+In contrast, the bias from `subst4` first increases from abs(beta153year) = 0.02 to 0.08 and then decreases for abs(beta153year) = 0.16.  This suggests that since  `subst4` substitutes censored values with $\frac{LOD}{2}$, which are lower than the true values on average for low values of abs(beta153year) but not lower for the highest value abs(beta153year) = 0.16.  This is also supported by the fact that the bias from `subst2` is much lower than that from `subst1` or `subst4`, which suggests that the real values of the censored data mostly lie between $LOD$ and $\frac{LOD}{2}$.
+
+The three censReg methods all give very similar results to one another; the values of MSE, squared-bias and variance are very similar from these methods for both abs(beta153year) = 0.08 and 0.16.  However, for the lowest value abs(beta153year) = 0.02, the variance from `censReg1` is approximately 10% lower than from `censReg2`, which is a statistically significant difference.  This fits with our prior knowledge that a more complex model generally has higher variance than the corresponding less complex one.  Moreover, we also expected that the estimates from `censReg2` would improve relative to those from `censReg1` as the value of abs(beta153year) increases, since the difference between these two methods is that `censReg2`uses `year` as additional predictor variable.  However, the fact that `censReg0impute` has a higher variance than `censReg1` seems puzzling in this respect, so perhaps our interpretation of model complexity is wrong is this context.
+
+Our prior expectation was that `censReg0impute` would perform relatively worse compared to the other `censReg` methods for larger values of abs(beta153year).  This is because we conjecture that the imputations from the predictor variables carry more information about cb28 as the absolute value of `beta28year` increases, and `censReg0impute` does not use imputation at all.  However, these results fail to support our conjecture here too.
+
+If we now compare the best performing models from each category, i.e. `subst2` and `censReg1`, we see that `censReg1` has much lower bias for all parameter values.  However, MSE for `subst2` is lower for one of the values, abs(beta153year) = 0.08.  In conclusion, we can say that `censReg1` gives better estimates than `subst2` for most, but not necessarily all, values of abs(beta153year).
+
+
+```{r chunk15}
+
+round(beta_table_key7_cprop03_beta002_ss12_sd03_niter10000*100000, 4)
+round(beta_table_key7_cprop03_beta004_ss12_sd03_niter10000*100000, 4)
+round(beta_table_key7_cprop03_beta008_ss12_sd03_niter10000*100000, 4)
+round(beta_table_key7_cprop03_beta016_ss12_sd03_niter10000*100000, 4)
+
+```
+
+#### Evaluation of methods for other values of `sd28_153`
+
+We will now hold `beta28year` and `cprop` fixed at their original values ($-0.02$ and $0.3$) and investigate the effect of larger `sd28_153` values, specifically: 0.1, 0.3, 0.5, and 0.7.  
+
+We see again that for these parameters value sets, censReg method give estimates that have very much lower bias, in general.   Since the three censReg methods all give very similar results to one another and very different results from the three substitution methods, we will again begin by interpreting the results for these two method categories separately.
+
+The bias from `subst4` decreases greatly as the value of `sd28_153` increases, whereas the bias from `subst1` is relatively independent of the value of `sd28_153`.  The bias from `subst2` again follows a trend intermediate between that of `subst1` and `subst4`, since it decreases from sd28_153 = 0.1 to 0.5 and then decreases for sd28_153 = 0.7.  Our interpretation is that since the censored values lie closer on average to LOD for smaller values of sd28_153, and further away for larger values.  The low bias from `subst4` for sd28_153 = 0.7 indicates that the real values for the censored data lie close to $\frac{LOD}{2}$ on average for this parameter value.
+
+The large gap between the uncensored cb28 data and the $\frac{LOD}{2}$ value means that `subst4` gives higher variance than all other methods for all values of sd28_153.   Similarly, the smallest possible gap between $LOD$ and the uncensored cb28 data explains the fact that `subst1` always gives the lowest variance.  We conjecture that the same logic would also hold for other possible substitution values; the larger the gap between this value and LOD, the larger the resulting variance.
+
+Again, we see that the variance from `censReg1` is approximately 10 % lower than that from `censReg2` for all four values of sd28_153.  Surprisingly the results from `censReg2` and `censReg0impute` are almost identical.  Is this a bug?
+
+In conclusion, substitution methods give much higher bias than cenreg methods.  Moreover, all three cenreg methods gave lower MSE than all three substitution methods for both sd28_153 = 0.1 and sd28_153 = 0.3.  However, the variance from cenreg methods increases faster than from substitution methods as sd28_153 increases; in fact for higher values of sd28_153, `subst1` and `subst2` gave the lowest and second lowest MSE values, respectively.  This relative failure of cenreg methods for relatively high values of sd28_153 makes sense, here is our explanation:   A higher `sd28_153` value means that the correlation between cb28 and cb153 is weaker, which results in less accurate imputation by ´censReg1` and `censReg2`, since the accuracy of imputation by these methods relies on the strength of correlation between cb28 and cb153.
+
+
+```{r chunk16}
+
+round(beta_table_key7_cprop03_beta002_ss12_sd01_niter10000*100000, 4)
+round(beta_table_key7_cprop03_beta002_ss12_sd03_niter10000*100000, 4)
+round(beta_table_key7_cprop03_beta002_ss12_sd05_niter10000*100000, 4)
+round(beta_table_key7_cprop03_beta002_ss12_sd07_niter10000*100000, 4)
+
+```
+
+
+
+#### Further comparisons between `subst2` and `censReg1`
+
+From our previous results, `subst2` is generally the best performing substitution method and `censReg1` is the best censReg method.  In the previous section, these methods gave similar MSE values for sd28_153 = 0.5, so we will fix this parameter at this value and investigate these estimation methods for four values of cprop: 0.1, 0.3, 0.5, 0.7.  These cprop values correspond to censoring 10 %, 30 %, 50 %, and 70% of the data respectively, so they correspond to decreasing values of $LOD$, which is our variable of primary interest.
+
+We see that `censReg1` gives estimates with very low bias for all values of `cprop`, whereas the bias from `subst2` increases greatly as `cprop` increases.   We interpret this as meaning that the real cb28 values are unchanged when LOD is lowered, which means that a higher proportion are likely to lie closer to LOD for larger values of `cprop` which means that substituted values are increasingly biased towards being too small as `cprop` increases.  Since `censReg1` fits a model to all the data (censored and uncensored)  it maintains low bias as the $LOD$ decreases, whilst the variance remains approximately constant.   However, as a greater proportion of values are substituted for the same constant value by the `subst2` method, the variance decreases because a higher proportion of the data values are identical.  
+
+In conclusion, `censReg1` gives similar bias and variance for different values of cprop whereas `subst2` does not.  From `subst2` the bias increases and the variance decreases as `cprop` increases.
+
+```{r chunk17}
+round(beta_table_top3_cprop01_beta002_ss12_sd05_niter10000*100000, 4)
+round(beta_table_top2_cprop03_beta002_ss12_sd05_niter10000*100000, 4)
+round(beta_table_top2_cprop05_beta002_ss12_sd05_niter10000*100000, 4)
+round(beta_table_top2_cprop07_beta002_ss12_sd05_niter10000*100000, 4)
+
+```
+
+
+
+
+
+
+
+#### The MSE, squared-bias and variance of predictions of `cb28` annual means from various censoring methods
+
+All the graphs in this section will shows MSE, squared-bias, or variance on the y-axis and year on the x-axis for the simulated 15-year period.  We begin by looking at variance of predictions from our best three substitution methods, best three cenreg methods.  We will again use `best` as our gold standard.
+
+
+```{r chunk18, eval=FALSE}
+
+all_cens_data_beta002_ss12_sd01_cprop01_niter10000 <- list()
+for (iter in 1:n_iter) {
+  all_cens_data_beta002_ss12_sd01_cprop01_niter10000[[iter]] <- get_cens_data(true_beta153year = -0.02, sample_size=12, sd28_153 = 0.1, cprop = 0.1)
+}
+
+all_cens_data_beta002_ss12_sd07_cprop01_niter10000 <- list()
+for (iter in 1:n_iter) {
+  all_cens_data_beta002_ss12_sd07_cprop01_niter10000[[iter]] <- get_cens_data(true_beta153year = -0.02, sample_size=12, sd28_153 = 0.7, cprop = 0.1)
+}
+
+all_cens_data_beta002_ss12_sd01_cprop07_niter10000 <- list()
+for (iter in 1:n_iter) {
+  all_cens_data_beta002_ss12_sd01_cprop07_niter10000[[iter]] <- get_cens_data(true_beta153year = -0.02, sample_size=12, sd28_153 = 0.1, cprop = 0.7)
+}
+
+all_cens_data_beta002_ss12_sd07_cprop07_niter10000 <- list()
+for (iter in 1:n_iter) {
+  all_cens_data_beta002_ss12_sd07_cprop07_niter10000[[iter]] <- get_cens_data(true_beta153year = -0.02, sample_size=12, sd28_153 = 0.7, cprop = 0.7)
+}
+
+```
+
+
+```{r chunk19, eval=FALSE}
+set.seed(1)
+years <- c(0:14)
+n_iter <- 10000
+# cprop <- 0.1
+true_beta153year <- -0.02 # -0.02 from real data. 
+# sd28_153 <- 0.1 # 0.1 from real data.
+# sample_size <- 12
+
+estimates_best <- matrix(0, nrow = 15, ncol = n_iter)
+estimates_omit <- matrix(0, nrow = 15, ncol = n_iter)
+estimates_subst2 <- matrix(0, nrow = 15, ncol = n_iter)
+estimates_subst1 <- matrix(0, nrow = 15, ncol = n_iter)
+estimates_subst4 <- matrix(0, nrow = 15, ncol = n_iter)
+estimates_censReg1 <- matrix(0, nrow = 15, ncol = n_iter)
+estimates_censReg2 <- matrix(0, nrow = 15, ncol = n_iter)
+
+best_annual_concs <-  -3.18 + 0.79 * (-2.91 + true_beta153year * years)
+best_annual_means_n_iter <- rep(best_annual_concs, n_iter)
+best_annual_means_matrix <- matrix(best_annual_means_n_iter, nrow=15, ncol=n_iter)
+best_residuals_df <- data.frame(estimates_best - best_annual_means_matrix)
+
+g = function(x) {
+  mean(x^2)
+}
+
+mse_bias_sq_var_matrix = matrix(0, nrow = 15, ncol=3)
+
+get_all_results_by_year = function(estimates_df) {
+  residuals_df = data.frame(estimates_df - best_annual_means_matrix)
+  mse_vector = apply(residuals_df, 1, g)
+  estimates_mean = apply(estimates_df, 1, mean)
+  bias_sq_vector = (estimates_mean - best_annual_concs)^2
+  variance_vector = apply(estimates_df, 1, var)
+  mse_bias_sq_var_matrix[,1] <- mse_vector
+  mse_bias_sq_var_matrix[,2] <- bias_sq_vector
+  mse_bias_sq_var_matrix[,3] <- variance_vector
+  data.frame(mse_bias_sq_var_matrix)
+}
+
+get_yearly_results_tib = function(n_iter, all_cens_data, all_sim_data) {
+
+estimates_best <- get_yearly_estimates_best(n_iter, all_sim_data)
+estimates_subst2 <- get_yearly_estimates_subst2(n_iter, all_cens_data)
+estimates_subst1 <- get_yearly_estimates_subst1(n_iter, all_cens_data)
+estimates_subst4 <- get_yearly_estimates_subst4(n_iter, all_cens_data)
+estimates_censReg1 <- get_yearly_estimates_censReg1(n_iter, all_cens_data)
+estimates_censReg2 <- get_yearly_estimates_censReg2(n_iter, all_cens_data)
+
+all_results_year <- data.frame("year" = c(0:14) )
+
+all_results_best <- get_all_results_by_year(estimates_best)
+colnames(all_results_best) <- c("mse_best","bias_best","variance_best")
+
+all_results_subst2 <- get_all_results_by_year(estimates_subst2)
+colnames(all_results_subst2) <- c("mse_subst2","bias_subst2","variance_subst2")
+
+all_results_subst1 <- get_all_results_by_year(estimates_subst1)
+colnames(all_results_subst1) <- c("mse_subst1","bias_subst1","variance_subst1")
+
+all_results_subst4 <- get_all_results_by_year(estimates_subst4)
+colnames(all_results_subst4) <- c("mse_subst4","bias_subst4","variance_subst4")
+
+all_results_censReg1 <- get_all_results_by_year(estimates_censReg1)
+colnames(all_results_censReg1) <- c("mse_censReg1","bias_censReg1","variance_censReg1")
+
+all_results_censReg2 <- get_all_results_by_year(estimates_censReg2)
+colnames(all_results_censReg2) <- c("mse_censReg2","bias_censReg2","variance_censReg2")
+
+all_results_df <- data.frame(cbind(all_results_year, all_results_best, all_results_subst2, all_results_subst1, all_results_subst4, all_results_censReg1, all_results_censReg2)) 
+all_results_tib <- as_tibble(all_results_df)
+return(all_results_tib)
+}
+
+```
+
+
+#### Variance of predictions of cb28 annual means from different methods
+
+##### Predictions for different values of beta153year
+
+We will begin by using the same parameter values we used in our earlier section "Evaluation of methods for larger absolute values of `beta28year`".  These parameters are fixed: cprop = 0.3,  sd28_153 = 0.3, whilst cb153year is given four values: -0.02, -0.04, -0.08 and -0.16 respectively. 
+
+We begin by showing graphs of the variance of predictions of cb28 annual means from our chosen censoring methods.  A common feature of all these graphs is that they typically have an approximately parabolic "U" shape, with higher variance at each end of the time period than in the middle of the period.   This is in accordance with our prior expectations because this is generally the case. 
+
+```{r chunk20a1, eval=FALSE}
+all_results_tib_beta002_sd03_cprop03_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd03_cprop03_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd03_niter10000)
+```
+
+
+```{r chunk20a2, eval=FALSE}
+
+plot_all_censReg_bias_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+```
+
+```{r chunk20b1, eval=FALSE}
+all_results_tib_beta004_sd03_cprop03_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta004_ss12_sd03_cprop03_niter10000, all_sim_data = all_sim_data_beta004_ss12_sd03_niter10000)
+```
+
+
+```{r chunk20b2, eval=FALSE}
+plot_all_censReg_bias_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1"))
+
+
+plot_all_censReg_mse_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta004_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta004_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1"))
+
+```
+
+```{r chunk20c1, eval=FALSE}
+all_results_tib_beta008_sd03_cprop03_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta008_ss12_sd03_cprop03_niter10000, all_sim_data = all_sim_data_beta008_ss12_sd03_niter10000)
+```
+
+
+```{r chunk20c2, eval=FALSE}
+plot_all_censReg_bias_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta008_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta008_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+
+```
+
+```{r chunk20d1, eval=FALSE}
+all_results_tib_beta016_sd03_cprop03_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta016_ss12_sd03_cprop03_niter10000, all_sim_data = all_sim_data_beta016_ss12_sd03_niter10000)
+```
+
+
+```{r chunk20d2, eval=FALSE}
+plot_all_censReg_bias_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta016_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta016_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1"))
+
+```
+
+Our first set of four graphs show the variance of `censReg1` and `censReg2` methods relative to `best` method for beta153year equal to -0.02, -0.04, -0.08, -0.16, respectively.   
+
+```{r chunk21}
+
+plot_grid(plot_all_censReg_var_beta002_sd03_cprop03_niter10000, plot_all_censReg_var_beta004_sd03_cprop03_niter10000, plot_all_censReg_var_beta008_sd03_cprop03_niter10000, plot_all_censReg_var_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the variance of `subst1`, `subst2` and `subst4`  methods relative to `best` method for beta153year equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk22}
+
+plot_grid(plot_all_subst_var_beta002_sd03_cprop03_niter10000, plot_all_subst_var_beta004_sd03_cprop03_niter10000, plot_all_subst_var_beta008_sd03_cprop03_niter10000, plot_all_subst_var_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk23}
+
+plot_grid(plot_all_var_beta002_sd03_cprop03_niter10000, plot_all_var_beta004_sd03_cprop03_niter10000, plot_all_var_beta008_sd03_cprop03_niter10000, plot_all_var_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the bias of predictions of cb28 annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of `censReg1` and `censReg2` methods relative to `best` method for beta153year equal to -0.02, -0.04, -0.08, -0.16, respectively.   
+
+```{r chunk24}
+
+plot_grid(plot_all_censReg_bias_beta002_sd03_cprop03_niter10000, plot_all_censReg_bias_beta004_sd03_cprop03_niter10000, plot_all_censReg_bias_beta008_sd03_cprop03_niter10000, plot_all_censReg_bias_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the bias of `subst1`, `subst2` and `subst4`  methods relative to `best` method for beta153year equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk25}
+
+plot_grid(plot_all_subst_bias_beta002_sd03_cprop03_niter10000, plot_all_subst_bias_beta004_sd03_cprop03_niter10000, plot_all_subst_bias_beta008_sd03_cprop03_niter10000, plot_all_subst_bias_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk26a}
+
+plot_grid(plot_all_bias_beta002_sd03_cprop03_niter10000, plot_all_bias_beta004_sd03_cprop03_niter10000, plot_all_bias_beta008_sd03_cprop03_niter10000, plot_all_bias_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the MSE of predictions of cb28 annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of `censReg1` and `censReg2` methods relative to `best` method for beta153year equal to -0.02, -0.04, -0.08, -0.16, respectively.   
+
+```{r chunk26b}
+
+plot_grid(plot_all_censReg_mse_beta002_sd03_cprop03_niter10000, plot_all_censReg_mse_beta004_sd03_cprop03_niter10000, plot_all_censReg_mse_beta008_sd03_cprop03_niter10000, plot_all_censReg_mse_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the MSE of `subst1`, `subst2` and `subst4`  methods relative to `best` method for beta153year equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk26c}
+
+plot_grid(plot_all_subst_mse_beta002_sd03_cprop03_niter10000, plot_all_subst_mse_beta004_sd03_cprop03_niter10000, plot_all_subst_mse_beta008_sd03_cprop03_niter10000, plot_all_subst_mse_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the MSE from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk26d}
+
+plot_grid(plot_all_mse_beta002_sd03_cprop03_niter10000, plot_all_mse_beta004_sd03_cprop03_niter10000, plot_all_mse_beta008_sd03_cprop03_niter10000, plot_all_mse_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+```
+
+
+##### Predictions for different values of sd28vs153
+
+For all our predictions in this section, these parameters are fixed: cprop = 0.3,  cb153year = -0.02, whilst sd28_153 is given four values: 0.1, 0.3, 0.5 and 0.7 respectively. 
+
+We begin by showing graphs of the variance of predictions of cb28 annual means from our chosen censoring methods.  A common feature of all these graphs is that they typically have an approximately parabolic "U" shape, with higher variance at each end of the time period than in the middle of the period.   This is in accordance with our prior expectations because this is generally the case. 
+
+
+```{r chunk27a1, eval=FALSE}
+all_results_tib_beta002_sd01_cprop03_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd01_cprop03_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd01_niter10000)
+```
+
+
+```{r chunk27a2, eval=FALSE}
+plot_all_censReg_bias_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd01_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+```
+
+
+```{r chunk27b1, eval=FALSE}
+all_results_tib_beta002_sd03_cprop03_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd03_cprop03_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd03_niter10000)
+```
+
+
+```{r chunk27b2, eval=FALSE}
+plot_all_censReg_bias_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd03_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd03_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+```
+
+
+```{r chunk27c1, eval=FALSE}
+all_results_tib_beta002_sd05_cprop03_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd05_cprop03_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd05_niter10000)
+```
+
+
+```{r chunk27c2, eval=FALSE}
+plot_all_censReg_bias_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1"))
+
+
+plot_all_censReg_mse_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1"))
+```
+
+
+```{r chunk27d1, eval=FALSE}
+all_results_tib_beta002_sd07_cprop03_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd07_cprop03_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd07_niter10000)
+```
+
+
+```{r chunk27d2,eval=FALSE}
+plot_all_censReg_bias_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd07_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+
+```
+
+
+Our first set of four graphs show the variance of `censReg1` and `censReg2` methods relative to `best` method for sd28_153 equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk28}
+
+plot_grid(plot_all_censReg_var_beta002_sd01_cprop03_niter10000, plot_all_censReg_var_beta002_sd03_cprop03_niter10000, plot_all_censReg_var_beta002_sd05_cprop03_niter10000, plot_all_censReg_var_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the variance of `subst1`, `subst2` and `subst4`  methods relative to `best` method for sd28_153 equal to 0.1, 0.3, 0.5, 0.7, respectively.
+
+```{r chunk29}
+
+plot_grid(plot_all_subst_var_beta002_sd01_cprop03_niter10000, plot_all_subst_var_beta002_sd03_cprop03_niter10000, plot_all_subst_var_beta002_sd05_cprop03_niter10000, plot_all_subst_var_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk30}
+
+plot_grid(plot_all_var_beta002_sd01_cprop03_niter10000, plot_all_var_beta002_sd03_cprop03_niter10000, plot_all_var_beta002_sd05_cprop03_niter10000, plot_all_var_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the bias of predictions of cb28 annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of `censReg1` and `censReg2` methods relative to `best` method for sd28_153 equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk31}
+
+plot_grid(plot_all_censReg_bias_beta002_sd01_cprop03_niter10000, plot_all_censReg_bias_beta002_sd03_cprop03_niter10000, plot_all_censReg_bias_beta002_sd05_cprop03_niter10000, plot_all_censReg_bias_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the bias of `subst1`, `subst2` and `subst4`  methods relative to `best` method for sd28_153 equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk32}
+
+plot_grid(plot_all_subst_bias_beta002_sd01_cprop03_niter10000, plot_all_subst_bias_beta002_sd03_cprop03_niter10000, plot_all_subst_bias_beta002_sd05_cprop03_niter10000, plot_all_subst_bias_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk33a}
+
+plot_grid(plot_all_bias_beta002_sd01_cprop03_niter10000, plot_all_bias_beta002_sd03_cprop03_niter10000, plot_all_bias_beta002_sd05_cprop03_niter10000, plot_all_bias_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the MSE of predictions of cb28 annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of `censReg1` and `censReg2` methods relative to `best` method for sd28_153 equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk33b}
+
+plot_grid(plot_all_censReg_mse_beta002_sd01_cprop03_niter10000, plot_all_censReg_mse_beta002_sd03_cprop03_niter10000, plot_all_censReg_mse_beta002_sd05_cprop03_niter10000, plot_all_censReg_mse_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the MSE of `subst1`, `subst2` and `subst4`  methods relative to `best` method for sd28_153 equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk33c}
+
+plot_grid(plot_all_subst_mse_beta002_sd01_cprop03_niter10000, plot_all_subst_mse_beta002_sd03_cprop03_niter10000, plot_all_subst_mse_beta002_sd05_cprop03_niter10000, plot_all_subst_mse_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the MSE from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk33d}
+
+plot_grid(plot_all_mse_beta002_sd01_cprop03_niter10000, plot_all_mse_beta002_sd03_cprop03_niter10000, plot_all_mse_beta002_sd05_cprop03_niter10000, plot_all_mse_beta002_sd07_cprop03_niter10000, labels = "AUTO")
+```
+
+
+
+##### Predictions for different values of cprop
+
+For all our predictions in this section, these parameters are fixed: sd28_153 = 0.5,  cb153year = -0.02, whilst cprop is given four values: 0.1, 0.3, 0.5 and 0.7 respectively. 
+
+We begin by showing graphs of the variance of predictions of cb28 annual means from our chosen censoring methods.
+
+```{r chunk34a1, eval=FALSE}
+all_results_tib_beta002_sd05_cprop01_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd05_cprop01_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd05_niter10000)
+```
+
+
+```{r chunk34a2, eval=FALSE}
+plot_all_censReg_bias_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd05_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+
+```
+
+
+```{r chunk34b2, eval=FALSE}
+plot_all_censReg_bias_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd05_cprop03_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop03_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+```
+
+
+```{r chunk34c1, eval=FALSE}
+all_results_tib_beta002_sd05_cprop05_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd05_cprop05_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd05_niter10000)
+```
+
+
+```{r chunk34c2, eval=FALSE}
+plot_all_censReg_bias_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd05_cprop05_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop05_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+
+```
+
+
+```{r chunk34d1, eval=FALSE}
+all_results_tib_beta002_sd05_cprop07_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd05_cprop07_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd05_niter10000)
+```
+
+
+```{r chunk34d2, eval=FALSE}
+plot_all_censReg_bias_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd05_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd05_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1"))
+```
+
+
+Our first set of four graphs show the variance of `censReg1` and `censReg2` methods relative to `best` method for cprop equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk35}
+
+plot_grid(plot_all_censReg_var_beta002_sd05_cprop01_niter10000, plot_all_censReg_var_beta002_sd05_cprop03_niter10000, plot_all_censReg_var_beta002_sd05_cprop05_niter10000, plot_all_censReg_var_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the variance of `subst1`, `subst2` and `subst4`  methods relative to `best` method for cprop equal to 0.1, 0.3, 0.5, 0.7, respectively.
+
+```{r chunk36}
+plot_grid(plot_all_subst_var_beta002_sd05_cprop01_niter10000, plot_all_subst_var_beta002_sd05_cprop03_niter10000, plot_all_subst_var_beta002_sd05_cprop05_niter10000, plot_all_subst_var_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below. 
+
+```{r chunk37}
+plot_grid(plot_all_var_beta002_sd05_cprop01_niter10000, plot_all_var_beta002_sd05_cprop03_niter10000, plot_all_var_beta002_sd05_cprop05_niter10000, plot_all_var_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the bias of predictions of cb28 annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of `censReg1` and `censReg2` methods relative to `best` method for cprop equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk38}
+plot_grid(plot_all_censReg_bias_beta002_sd05_cprop01_niter10000, plot_all_censReg_bias_beta002_sd05_cprop03_niter10000, plot_all_censReg_bias_beta002_sd05_cprop05_niter10000, plot_all_censReg_bias_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the bias of `subst1`, `subst2` and `subst4`  methods relative to `best` method for cprop equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk39}
+plot_grid(plot_all_subst_bias_beta002_sd05_cprop01_niter10000, plot_all_subst_bias_beta002_sd05_cprop03_niter10000, plot_all_subst_bias_beta002_sd05_cprop05_niter10000, plot_all_subst_bias_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk40a}
+plot_grid(plot_all_bias_beta002_sd05_cprop01_niter10000, plot_all_bias_beta002_sd05_cprop03_niter10000, plot_all_bias_beta002_sd05_cprop05_niter10000, plot_all_bias_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the MSE of predictions of cb28 annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of `censReg1` and `censReg2` methods relative to `best` method for cprop equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk40b}
+plot_grid(plot_all_censReg_mse_beta002_sd05_cprop01_niter10000, plot_all_censReg_mse_beta002_sd05_cprop03_niter10000, plot_all_censReg_mse_beta002_sd05_cprop05_niter10000, plot_all_censReg_mse_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the MSE of `subst1`, `subst2` and `subst4`  methods relative to `best` method for cprop equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk40c}
+plot_grid(plot_all_subst_mse_beta002_sd05_cprop01_niter10000, plot_all_subst_mse_beta002_sd05_cprop03_niter10000, plot_all_subst_mse_beta002_sd05_cprop05_niter10000, plot_all_subst_mse_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the MSE from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk40d}
+plot_grid(plot_all_mse_beta002_sd05_cprop01_niter10000, plot_all_mse_beta002_sd05_cprop03_niter10000, plot_all_mse_beta002_sd05_cprop05_niter10000, plot_all_mse_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+
+
+##### Predictions for low-low, high-low, low-high, high-high values of sd28vs153-cprop
+
+We will now use the same sets of parameter values that we used in our earlier section "Selection of censoring methods for further study".  Concretely: beta28year = -0.02 is held fixed, whilst a "low" and a "high" value for each of `cprop` and `sd28_153` are used.  Concretely: (0.1, 0.1), (0.7, 0.1), (0.1, 0.5) and (0.7, 0.5) were used for (cprop, sd28_153) respectively.
+
+We begin by showing graphs of the variance of predictions of cb28 annual means from our chosen censoring methods.
+
+```{r chunk41, eval=FALSE}
+
+all_results_tib_beta002_sd01_cprop01_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd01_cprop01_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd01_niter10000)
+
+all_results_tib_beta002_sd07_cprop01_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd07_cprop01_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd07_niter10000)
+
+all_results_tib_beta002_sd01_cprop07_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd01_cprop07_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd01_niter10000)
+
+all_results_tib_beta002_sd07_cprop07_niter10000 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd07_cprop07_niter10000, all_sim_data = all_sim_data_beta002_ss12_sd07_niter10000)
+
+```
+
+
+```{r chunk41a, eval=FALSE}
+plot_all_censReg_bias_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1"))
+
+
+plot_all_censReg_mse_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd01_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1"))
+
+```
+
+
+```{r chunk41b, eval=FALSE}
+plot_all_censReg_bias_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd01_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd01_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1"))
+```
+
+
+```{r chunk41c, eval=FALSE}
+plot_all_censReg_bias_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd07_cprop01_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop01_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+```
+
+
+```{r chunk41d, eval=FALSE}
+plot_all_censReg_bias_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_bias_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_var_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_var_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) 
+
+
+plot_all_censReg_mse_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_subst_mse_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = mse_subst4, color="subst4"))
+
+plot_all_mse_beta002_sd07_cprop07_niter10000 <- ggplot(data = all_results_tib_beta002_sd07_cprop07_niter10000) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg1, color="censReg1")) 
+```
+
+
+
+Our first set of four graphs show the variance of `censReg1` and `censReg2` methods relative to `best` method for (sd28_153, cprop) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.   
+
+```{r chunk42}
+plot_grid(plot_all_censReg_var_beta002_sd01_cprop01_niter10000, plot_all_censReg_var_beta002_sd01_cprop07_niter10000, plot_all_censReg_var_beta002_sd07_cprop01_niter10000, plot_all_censReg_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the variance of `subst1`, `subst2` and `subst4`  methods relative to `best` method for (sd28_153, cprop) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.   
+
+```{r chunk43}
+plot_grid(plot_all_subst_var_beta002_sd01_cprop01_niter10000, plot_all_subst_var_beta002_sd01_cprop07_niter10000, plot_all_subst_var_beta002_sd07_cprop01_niter10000, plot_all_subst_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk44}
+plot_grid(plot_all_var_beta002_sd01_cprop01_niter10000, plot_all_var_beta002_sd01_cprop07_niter10000, plot_all_var_beta002_sd07_cprop01_niter10000, plot_all_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the bias of predictions of cb28 annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of `censReg1` and `censReg2` methods relative to `best` method for (sd28_153, cprop) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.      
+
+```{r chunk45}
+plot_grid(plot_all_censReg_bias_beta002_sd01_cprop01_niter10000, plot_all_censReg_bias_beta002_sd01_cprop07_niter10000, plot_all_censReg_bias_beta002_sd07_cprop01_niter10000, plot_all_censReg_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the bias of `subst1`, `subst2` and `subst4`  methods relative to `best` method for (sd28_153, cprop) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.    
+
+```{r chunk46}
+plot_grid(plot_all_subst_bias_beta002_sd01_cprop01_niter10000, plot_all_subst_bias_beta002_sd01_cprop07_niter10000, plot_all_subst_bias_beta002_sd07_cprop01_niter10000, plot_all_subst_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk47a}
+plot_grid(plot_all_bias_beta002_sd01_cprop01_niter10000, plot_all_bias_beta002_sd01_cprop07_niter10000, plot_all_bias_beta002_sd07_cprop01_niter10000, plot_all_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the MSE of predictions of cb28 annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of `censReg1` and `censReg2` methods relative to `best` method for (sd28_153, cprop) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.      
+
+```{r chunk47b}
+plot_grid(plot_all_censReg_mse_beta002_sd01_cprop01_niter10000, plot_all_censReg_mse_beta002_sd01_cprop07_niter10000, plot_all_censReg_mse_beta002_sd07_cprop01_niter10000, plot_all_censReg_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the MSE of `subst1`, `subst2` and `subst4`  methods relative to `best` method for (sd28_153, cprop) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.    
+
+```{r chunk47c}
+plot_grid(plot_all_subst_mse_beta002_sd01_cprop01_niter10000, plot_all_subst_mse_beta002_sd01_cprop07_niter10000, plot_all_subst_mse_beta002_sd07_cprop01_niter10000, plot_all_subst_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the MSE from the `subst2`, `censReg1` and `best` methods together on the same plot, which is displayed below.
+
+```{r chunk47d}
+plot_grid(plot_all_mse_beta002_sd01_cprop01_niter10000, plot_all_mse_beta002_sd01_cprop07_niter10000, plot_all_mse_beta002_sd07_cprop01_niter10000, plot_all_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+
+
+
+
+
+
+#### Obsolete content
+
+The remainder of this document stored content that I now view as obsolete.
+
+
+```{r chunk48, eval=FALSE}
+
+# This is old code.  Must regenerate data, I think.
+all_results_tib_cprop07_sd01 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd01_cprop07, all_sim_data = all_sim_data_beta002_ss12_sd01)
+
+plot_all_censReg_var_cprop07_sd01 <- ggplot(data = all_results_tib_cprop07_sd01) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_omit_var_cprop07_sd01 <- ggplot(data = all_results_tib_cprop07_sd01) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  # geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_cprop07_sd01 <- ggplot(data = all_results_tib_cprop07_sd01) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  # geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+
+all_results_tib_cprop01_sd05 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd05_cprop01, all_sim_data = all_sim_data_beta002_ss12_sd05)
+
+plot_all_censReg_var_cprop01_sd05 <- ggplot(data = all_results_tib_cprop01_sd05) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_omit_var_cprop01_sd05 <- ggplot(data = all_results_tib_cprop01_sd05) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_cprop01_sd05 <- ggplot(data = all_results_tib_cprop01_sd05) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+
+all_results_tib_cprop07_sd05 <- get_yearly_results_tib(n_iter, all_cens_data = all_cens_data_beta002_ss12_sd05_cprop07, all_sim_data = all_sim_data_beta002_ss12_sd05)
+
+plot_all_censReg_var_cprop07_sd05 <- ggplot(data = all_results_tib_cprop07_sd05) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+plot_all_subst_omit_var_cprop07_sd05 <- ggplot(data = all_results_tib_cprop07_sd05) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  # geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4"))
+
+plot_all_var_cprop07_sd05 <- ggplot(data = all_results_tib_cprop07_sd05) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  # geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x= year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2"))
+
+```
+
+Our first set of four graphs show the variance of `censReg1` and `censReg2` methods relative to `best` method for $(cprop, sd)$ equal to $(0.1, 0.1)$, $(0.7, 0.1)$, $(0.1, 0.5)$, $(0.7, 0.5)$, respectively.   We see that the `censReg2` method consistently gives higher variance than `censReg1`.  This is in accordance with our prior expectations because models with more predictor variables generally have higher variance than models with fewer predictors.    
+
+```{r chunk1002, eval=FALSE}
+
+
+plot_grid(plot_all_censReg_var_beta002_sd03_cprop03_niter10000, plot_all_censReg_var_beta004_sd03_cprop03_niter10000, plot_all_censReg_var_beta004_sd03_cprop03_niter10000, plot_all_censReg_var_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+
+# plot_grid(plot_all_censReg_var_cprop01_sd01, plot_all_censReg_var_cprop07_sd01, plot_all_censReg_var_cprop01_sd05, plot_all_censReg_var_cprop01_sd05, labels = "AUTO")
+
+```
+
+Our second set of four graphs show the variance of `subst1`, `subst2` and `subst4` methods relative to `best` method for $(cprop, sd)$ equal to $(0.1, 0.1)$, $(0.7, 0.1)$, $(0.1, 0.5)$, $(0.7, 0.5)$, respectively.   In addition, the `omit` method can be used to obtain results for `cprop = 0.1` but not for `cprop = 0.7`, so the variance from those methods is shown on the two graphs for which `cprop = 0.1`.
+
+```{r chunk1003, eval=FALSE}
+
+plot_grid(plot_all_subst_var_beta002_sd03_cprop03_niter10000, plot_all_subst_var_beta004_sd03_cprop03_niter10000, plot_all_subst_var_beta004_sd03_cprop03_niter10000, plot_all_subst_var_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+
+# plot_grid(plot_all_subst_omit_var_cprop01_sd01, plot_all_subst_omit_var_cprop07_sd01, plot_all_subst_omit_var_cprop01_sd05, plot_all_subst_omit_var_cprop01_sd05, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the previous two sets together on the same plot, which is displayed below. 
+
+```{r chunk1004, eval=FALSE}
+
+plot_grid(plot_all_var_beta002_sd03_cprop03_niter10000, plot_all_var_beta004_sd03_cprop03_niter10000, plot_all_var_beta004_sd03_cprop03_niter10000, plot_all_var_beta016_sd03_cprop03_niter10000, labels = "AUTO")
+
+# plot_grid(plot_all_var_cprop01_sd01, plot_all_var_cprop07_sd01, plot_all_var_cprop01_sd05, plot_all_var_cprop01_sd05, labels = "AUTO")
+
+```
+
+
+
+#### Bias of predictions of cb28 annual means from all of our censoring methods 
+
+##### The `censReg1naive` method gives extremely biased predictions 
+
+The `censReg1naive` method gives extremely biased predictions for all 12 parameter value-pairs (four cprop levels, and three sd28_153 levels) .   
+Two graphs are presented below to illustrate this: they show the bias of predictions of cb28 annual means from the lowest levels (cprop = 0.1, sd28_153 = 0.1), and highest levels (cprop = 0.7, sd28_153 = 0.5), for each of these parameters, respectively.
+
+This shows the necessity of conditioning on both the cb153 value and the condition cb28 < cb28_cprop by using a truncated normal distribution as presented in our previous chapter on mathematical theory.  In contrast, censReg1naive conditions on the cb153 value only and uses a non-truncated normal distribution which results in significant bias because imputed cb28 values can be higher than cb28_cprop.  Consequently we will not discuss censReg1naive any further: we expected this method to give biased estimates and it did.
+
+```{r chunk1005, eval=FALSE}
+
+plot_all_censReg_bias_plus_naive_low_params <- ggplot(data = all_results_tib_cprop01_sd01) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1naive, color="censReg1naive")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_censReg_bias_plus_naive_high_params <- ggplot(data = all_results_tib_cprop07_sd05) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1naive, color="censReg1naive")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+```
+
+```{r chunk1006, eval=FALSE}
+plot_grid(plot_all_censReg_bias_plus_naive_low_params, plot_all_censReg_bias_plus_naive_high_params, labels = "AUTO")
+```
+
+#### Bias of predictions of cb28 annual means from all of our censoring methods except for `censReg1naive`
+
+Every graph in this section shows the squared-bias of predictions of cb28 annual means from some of our censoring methods.  
+
+```{r chunk1007, eval=FALSE}
+
+plot_all_censReg_bias_cprop01_sd01 <- ggplot(data = all_results_tib_cprop01_sd01) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_omit_bias_cprop01_sd01 <- ggplot(data = all_results_tib_cprop01_sd01) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_cprop01_sd01 <- ggplot(data = all_results_tib_cprop01_sd01) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+
+plot_all_censReg_bias_cprop07_sd01 <- ggplot(data = all_results_tib_cprop07_sd01) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_omit_bias_cprop07_sd01 <- ggplot(data = all_results_tib_cprop07_sd01) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  # geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_cprop07_sd01 <- ggplot(data = all_results_tib_cprop07_sd01) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  # geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+
+plot_all_censReg_bias_cprop01_sd05 <- ggplot(data = all_results_tib_cprop01_sd05) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_omit_bias_cprop01_sd05 <- ggplot(data = all_results_tib_cprop01_sd05) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_cprop01_sd05 <- ggplot(data = all_results_tib_cprop01_sd05) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+
+plot_all_censReg_bias_cprop07_sd05 <- ggplot(data = all_results_tib_cprop07_sd05) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+plot_all_subst_omit_bias_cprop07_sd05 <- ggplot(data = all_results_tib_cprop07_sd05) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  # geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4"))
+
+plot_all_bias_cprop07_sd05 <- ggplot(data = all_results_tib_cprop07_sd05) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  # geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2"))
+
+```
+
+Our first set of four graphs show the bias of `censReg1` and `censReg2` methods relative to `best` method for $(cprop, sd)$ equal to $(0.1, 0.1)$, $(0.7, 0.1)$, $(0.1, 0.5)$, $(0.7, 0.5)$, respectively.       
+
+```{r chunk1008, eval=FALSE}
+
+plot_grid(plot_all_censReg_bias_cprop01_sd01, plot_all_censReg_bias_cprop07_sd01, plot_all_censReg_bias_cprop01_sd05, plot_all_censReg_bias_cprop01_sd05, labels = "AUTO")
+
+```
+
+Our second set of four graphs show the bias of `subst1`, `subst2` and `subst4` methods relative to `best` method for $(cprop, sd)$ equal to $(0.1, 0.1)$, $(0.7, 0.1)$, $(0.1, 0.5)$, $(0.7, 0.5)$, respectively.   In addition, the `omit` method can be used to obtain results for `cprop = 0.1` but not for `cprop = 0.7`, so the variance from those methods is shown on the two graphs for which `cprop = 0.1`.
+
+We see that (ref: my Google Doc)
+
+```{r chunk1009, eval=FALSE}
+
+plot_grid(plot_all_subst_omit_bias_cprop01_sd01, plot_all_subst_omit_bias_cprop07_sd01, plot_all_subst_omit_bias_cprop01_sd05, plot_all_subst_omit_bias_cprop01_sd05, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the previous two sets together on the same plot, which is displayed below. 
+
+```{r chunk1010, eval=FALSE}
+
+plot_grid(plot_all_bias_cprop01_sd01, plot_all_bias_cprop07_sd01, plot_all_bias_cprop01_sd05, plot_all_bias_cprop01_sd05, labels = "AUTO")
+
+```
+
+
+The remainder of this report is only VERY PRELIMINARY.  BIG CHANGE IS GONNA COME.
+
+
+```{r chunk1011, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.1, n_iter=100)
+
+
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+
+
+Accuracy of yearly predictions for cprop = 0.1 and sd28_153 = 0.1.
+
+
+```{r chunk1012, eval=FALSE}
+
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+
+```
+
+```{r chunk1013, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.3, n_iter=100)
+
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+Accuracy of yearly predictions for cprop = 0.3 and sd28_153 = 0.1.
+
+
+```{r chunk1014, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+```{r chunk1015, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.5, n_iter=100)
+  
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+Accuracy of yearly predictions for cprop = 0.5 and sd28_153 = 0.1.
+
+```{r chunk1016, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+```{r chunk1017, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.7, n_iter=100)
+  
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+```
+
+Accuracy of yearly predictions for cprop = 0.7 and sd28_153 = 0.1.
+
+```{r chunk1018, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+
+```{r chunk1019, eval=FALSE}
+
+for (iter in 1:n_iter) {
+  all_sim_data[[iter]] <- get_sim_data(true_beta153year = -0.02, sample_size=12, sd28_153=0.3)
+}
+
+all_results_tib <- get_yearly_results_tib(cprop=0.1, n_iter=100)
+
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+Accuracy of yearly predictions for cprop = 0.1 and sd28_153 = 0.3.
+
+
+```{r chunk1020, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+```{r chunk1021, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.3, n_iter=100)
+  
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+Accuracy of yearly predictions for cprop = 0.3 and sd28_153 = 0.3.
+
+
+```{r chunk1022, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+```{r chunk1023, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.5, n_iter=100)
+
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+Accuracy of yearly predictions for cprop = 0.5 and sd28_153 = 0.3.
+
+```{r chunk1024, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+```{r chunk1025, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.7, n_iter=100)
+
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+```
+
+Accuracy of yearly predictions for cprop = 0.7 and sd28_153 = 0.3.
+
+```{r chunk1026, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+
+```{r chunk1027, eval=FALSE}
+
+for (iter in 1:n_iter) {
+  all_sim_data[[iter]] <- get_sim_data(true_beta153year = -0.02, sample_size=12, sd28_153=0.5)
+}
+
+all_results_tib <- get_yearly_results_tib(cprop=0.1, n_iter=100)
+  
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+Accuracy of yearly predictions for cprop = 0.1 and sd28_153 = 0.5.
+
+
+```{r chunk1028, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+```{r chunk1029, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.3, n_iter=100)
+
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_omit, color="omit")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+Accuracy of yearly predictions for cprop = 0.3 and sd28_153 = 0.5.
+
+
+```{r chunk1030, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+```{r chunk1031, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.5, n_iter=100)
+
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+
+```
+
+Accuracy of yearly predictions for cprop = 0.5 and sd28_153 = 0.5.
+
+```{r chunk1032, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+```{r chunk1033, eval=FALSE}
+all_results_tib <- get_yearly_results_tib(cprop=0.7, n_iter=100)
+
+plot_all_censReg_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=mse_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = mse_censReg2, color="censReg2"))
+
+plot_all_censReg_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=bias_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = bias_censReg2, color="censReg2")) 
+
+plot_all_censReg_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y=variance_censReg1, color="censReg1")) +
+  geom_line(mapping = aes(x = year, y = variance_censReg2, color="censReg2")) 
+
+plot_all_subst_omit_mse <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = mse_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = mse_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = mse_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) 
+
+plot_all_subst_omit_variance <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) 
+
+plot_all_subst_omit_bias_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = bias_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = bias_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = bias_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = bias_subst4, color="subst4")) 
+
+plot_all_subst_omit_variance_plus_subst4 <- ggplot(data = all_results_tib) +
+  geom_line(mapping = aes(x = year, y = variance_best, color="best")) +
+  geom_line(mapping = aes(x = year, y = variance_subst2, color="subst2")) +
+  geom_line(mapping = aes(x = year, y = variance_subst1, color="subst1")) +
+  geom_line(mapping = aes(x = year, y = variance_subst4, color="subst4")) 
+
+```
+
+Accuracy of yearly predictions for cprop = 0.7 and sd28_153 = 0.5.
+
+```{r chunk1034, eval=FALSE}
+plot_grid(plot_all_censReg_bias, plot_all_censReg_mse, plot_all_censReg_variance, labels = "AUTO")
+
+plot_grid(plot_all_subst_omit_mse, plot_all_subst_omit_bias, 
+plot_all_subst_omit_variance, 
+plot_all_subst_omit_bias_plus_subst4, labels = "AUTO")
+```
+
+####  Miscellaneous brain-storming-type notes 
+
+Cenreg did not work reliably (see v1 of this doc), so all censored regression will be done with censReg (followed by etruncnorm). 
+
+Sqrt(2) seems to be the best denominator.  I could also try other numbers denominators and compare.
+
+Found mse, squared-bias and variance with respect to estimation of beta for: 
+
+best, omit, subst2 (substitution with $\frac{LOD}{\sqrt(2)}$), subst1, subst4, censReg1, censReg2,  
+
+Simulation study reference: `Tekindal2017_EvaluatingLeft-CensoredDataBySimulationStudy.pdf`).
+
+Could find the boundaries of the parameter space, especially:
+
+`cprop` # censoring proportion
+
+`true_beta28year` #beta for cb28 ~ year
+
+Could try censReg with or without `year`.
+
+Could try different substitutions:
+
+LOD, LOD/sqrt(2), LOD/2, 0.
+
+##### Math concepts to include
+
+How many iterations to run?
+
+Preliminary screening (fewer iterations), followed by in-depth assessment of the best performing models.
+
+Confidence interval or prediction interval or neither?
+
+Estimated prediction error (EPE).  
+
+Assessing model accuracy: need for test dataset and training dataset?   Use RMSE instead of MSE so that this metric has same units as y?  
+
+
+
+### Appendices
+
+#### Appendix 1
+
+The two graphs A, B below show the variation of MSE (red curve) and squared-bias-plus-variance (black curve) from `best_fit` and `omit_fit` respectively, over the simulated 15-year period.   The famous result "Bias-variance decomposition" states $$ MSE = Bias^2 + Variance$$ so we expect the black and red curves to coincide (be superposed); happily they are :)
+
+```{r chunk1100, eval=FALSE}
+# The (omitted) plots below show that the 
+# bias-variance decomposition holds for all results.
+
+# best_verify_bias_variance_decomp <- ggplot(data = all_results_tib) +
+#   geom_line(mapping = aes(x = year, y = mse_best, color="mse_best")) +
+#   geom_line(mapping = aes(x = year, y = bias_sq_plus_variance_best ))
+
+# omit_verify_bias_variance_decomp <- ggplot(data = all_results_tib) +
+#   geom_line(mapping = aes(x = year, y = mse_omit, color="mse_omit")) +
+#   geom_line(mapping = aes(x = year, y = bias_sq_plus_variance_omit ))
+```
+
+#### Appendix 2
+
+We now generate the dataset `omit_yearly_mean` from the fixed parameters as follows:
+
+12 values for the log-concentration of CB153 per year, for ten years, were generated and denoted as `cb153sim`.
+
+From every such CB153 value, the corresponding value for CB28 was generated.
+
+`median(cb28)` was used as the level of quantification `LOQ_p50`.
+
+Observations with CB28 < LOQ_p50 were removed from the dataset.
+
+Annual geometric means for CB28 and CB153 concentrations were generated. 
+
+The code chunk below generates `omit_yearly_mean` for 1000 iterations, fits a linear model `omit_fit` at each iteration, and computes the corresponding mse, squared-bias and variance.
+
+#### Appendix 3
+
+```{r chunk2000, eval=FALSE}
+# This chunk estimates the standard error (se) and % error for different 
+# values of n_iter.  n_iter=1000 gave 1.7% error for the "best" method.
+# The %error was proportional to 1/sqrt(n_iter) as expected.
+n_it <- 10
+err_beta_vector <- rep(0, n_it)
+# all_results_nsims <- matrix(0, nrow = n_it, ncol=3)
+estimates_best_beta_nsims <- rep(0, n_iter)
+# true_beta153 <- -0.02
+true_beta28_153 <- 0.79 
+
+for (it in 1:n_it) {
+  n_iter <- 10
+  all_sim_data <- list()
+  for (iter in 1:n_iter) {
+    all_sim_data[[iter]] <- get_sim_data(true_beta153year = -0.02, sample_size=12, sd28_153=0.5)
+  }
+  
+  estimates_best_beta_nsims <- get_beta_estimates_best(cprop=0.3, n_iter)
+  err_beta_vector[it] = 100*(sd(estimates_best_beta_nsims)/sqrt(n_iter))/mean(estimates_best_beta_nsims)
+  # mse_beta_vector[it] = mean( (estimates_best_beta_nsims - true_beta28_153 * true_beta)^2 )
+  # all_results_nsims[it, ] <- get_all_results_beta28year(estimates_best_beta_nsims, true_beta=-0.02)
+  # mse_nsims[it] <- all_results_nsims
+  # mse_sd_nsims[it] <- sd(all_results_nsims[1]) # / all_results_nsims
+  # all_results_sd_nsims[it] <- sd(all_results_nsims) / all_results_nsims
+  # sd_percent_error_nsims <-  all_results_sd_nsims / all_results_nsims
+}
+# sd(mse_beta_vector)
+# mse_error_percent <- 100 * sd(mse_beta_vector) / mean(mse_beta_vector)
+# mse_error_percent
+mean(err_beta_vector)
+# se_beta <- sd(var_beta_vector)/sqrt(n_iter)
+# confint.default(var_beta_vector,level=0.95)
+```
+
+
+
+
+
+
