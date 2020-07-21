@@ -1,0 +1,1154 @@
+---
+title: "Plot Grid Sandbox v5"
+author: "Marc Roddis"
+date: "7/17/2020"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+    toc_depth: 4
+    df_print: kable
+    fig_width: 9
+    fig_height: 9
+fontsize: 12pt
+geometry: margin=1.5in
+---
+
+```{r chunk1, include=FALSE}
+library(RCurl)
+library(tidyverse)
+library(styler)
+library(gridExtra)
+library(cowplot)
+library(truncreg)
+library(truncnorm)
+library(censReg)
+load("AllTablesPredsGraphsv18e.Rdata")
+load("AllBetaTablesVarySs.RData")
+load("AllBetaTablesAll9.RData")
+load("PlotAll3CensRegVaryBetaVBM.RData")
+load("best6PredsVaryBeta.RData")
+load("PlotAll3censRegVaryBeta.RData")
+load("p31GridPlotsVaryBetaFV1.RData")
+load("p32GridPlotsVarySdFV1.RData")
+load("p33GridPlotsVaryCpropFV1.RData")
+knitr::opts_chunk$set(echo=FALSE)
+```
+
+# Results for the prediction of the annual means $E(Y|A=a)$
+
+All the graphs in this section will shows MSE, squared-bias, or variance on the y-axis and year on the x-axis for the simulated 15-year period.  
+
+We begin by looking at variance of predictions from our best three substitution methods and our best three censored regression methods.  
+
+We will again use $\texttt{best}$ as our gold standard.
+
+## Predictions for different values of $\beta_{A}$
+
+We will begin by using the same parameter values we used in our earlier section "Evaluation of methods for larger absolute values of `beta28year`".  
+
+These parameters are fixed: $cprop = 0.3$,  $\sigma$ = 0.3, whilst $\beta_{A}$ is given four values: -0.02, -0.04, -0.08 and -0.16 respectively. 
+
+
+We begin by showing graphs of the variance of predictions of $Y$ annual means from our chosen censoring methods.  
+
+A common feature of all these graphs is that they typically have an approximately parabolic "U" shape, with higher variance at each end of the time period than in the middle of the period.   
+
+This is in accordance with our prior expectations because this is generally the case. 
+
+
+Our first set of four graphs show the variance of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively.   
+
+```{r chunk21a, eval=FALSE}
+p31A_cR_var <- plot_all3_censReg_var_beta002_sd03_cprop03_niter10000
+p31B_cR_var <- plot_all3_censReg_var_beta004_sd03_cprop03_niter10000
+p31C_cR_var <- plot_all3_censReg_var_beta008_sd03_cprop03_niter10000
+p31D_cR_var <- plot_all3_censReg_var_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_3censReg_var_vary_beta <- plot_grid(
+  p31A_cR_var + theme(legend.position="none"),
+  p31B_cR_var + theme(legend.position="none"),
+  p31C_cR_var+ theme(legend.position="none"),
+  p31D_cR_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_cR_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_3censReg_var_vary_beta <- plot_grid(p31_make_grid_3censReg_var_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk21b}
+p31_grid_plot_3censReg_var_vary_beta
+```
+
+
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk22a, eval=FALSE}
+p31A_S_var <- plot_all_subst_var_beta002_sd03_cprop03_niter10000
+p31B_S_var <- plot_all_subst_var_beta004_sd03_cprop03_niter10000
+p31C_S_var <- plot_all_subst_var_beta008_sd03_cprop03_niter10000
+p31D_S_var <- plot_all_subst_var_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_subst_var_vary_beta <- plot_grid(
+  p31A_S_var + theme(legend.position="none"),
+  p31B_S_var + theme(legend.position="none"),
+  p31C_S_var+ theme(legend.position="none"),
+  p31D_S_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_S_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_subst_var_vary_beta <- plot_grid(p31_make_grid_subst_var_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk22b}
+p31_grid_plot_subst_var_vary_beta
+```
+
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk23a, eval=FALSE}
+p31A_all_var <- plot_all_var_beta002_sd03_cprop03_niter10000
+p31B_all_var <- plot_all_var_beta004_sd03_cprop03_niter10000
+p31C_all_var <- plot_all_var_beta008_sd03_cprop03_niter10000
+p31D_all_var <- plot_all_var_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_all_var_vary_beta <- plot_grid(
+  p31A_all_var + theme(legend.position="none"),
+  p31B_all_var + theme(legend.position="none"),
+  p31C_all_var+ theme(legend.position="none"),
+  p31D_all_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_all_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_all_var_vary_beta <- plot_grid(p31_make_grid_all_var_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk23b}
+p31_grid_plot_all_var_vary_beta
+```
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively.  
+
+
+```{r chunk24a, eval=FALSE}
+p31A_cR_bias <- plot_all3_censReg_bias_beta002_sd03_cprop03_niter10000
+p31B_cR_bias <- plot_all3_censReg_bias_beta004_sd03_cprop03_niter10000
+p31C_cR_bias <- plot_all3_censReg_bias_beta008_sd03_cprop03_niter10000
+p31D_cR_bias <- plot_all3_censReg_bias_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_3censReg_bias_vary_beta <- plot_grid(
+  p31A_cR_bias + theme(legend.position="none"),
+  p31B_cR_bias + theme(legend.position="none"),
+  p31C_cR_bias+ theme(legend.position="none"),
+  p31D_cR_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_cR_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_3censReg_bias_vary_beta <- plot_grid(p31_make_grid_3censReg_bias_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk24b}
+p31_grid_plot_3censReg_bias_vary_beta
+```
+
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk25a, eval=FALSE}
+p31A_S_bias <- plot_all_subst_bias_beta002_sd03_cprop03_niter10000
+p31B_S_bias <- plot_all_subst_bias_beta004_sd03_cprop03_niter10000
+p31C_S_bias <- plot_all_subst_bias_beta008_sd03_cprop03_niter10000
+p31D_S_bias <- plot_all_subst_bias_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_subst_bias_vary_beta <- plot_grid(
+  p31A_S_bias + theme(legend.position="none"),
+  p31B_S_bias + theme(legend.position="none"),
+  p31C_S_bias+ theme(legend.position="none"),
+  p31D_S_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_S_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_subst_bias_vary_beta <- plot_grid(p31_make_grid_subst_bias_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk25b}
+p31_grid_plot_subst_bias_vary_beta
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk26a1, eval=FALSE}
+p31A_all_bias <- plot_all_bias_beta002_sd03_cprop03_niter10000
+p31B_all_bias <- plot_all_bias_beta004_sd03_cprop03_niter10000
+p31C_all_bias <- plot_all_bias_beta008_sd03_cprop03_niter10000
+p31D_all_bias <- plot_all_bias_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_all_bias_vary_beta <- plot_grid(
+  p31A_all_bias + theme(legend.position="none"),
+  p31B_all_bias + theme(legend.position="none"),
+  p31C_all_bias+ theme(legend.position="none"),
+  p31D_all_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_all_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_all_bias_vary_beta <- plot_grid(p31_make_grid_all_bias_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk26a2}
+p31_grid_plot_all_bias_vary_beta
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively.   
+
+```{r chunk26b1, eval=FALSE}
+p31A_cR_mse <- plot_all3_censReg_mse_beta002_sd03_cprop03_niter10000
+p31B_cR_mse <- plot_all3_censReg_mse_beta004_sd03_cprop03_niter10000
+p31C_cR_mse <- plot_all3_censReg_mse_beta008_sd03_cprop03_niter10000
+p31D_cR_mse <- plot_all3_censReg_mse_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_3censReg_mse_vary_beta <- plot_grid(
+  p31A_cR_mse + theme(legend.position="none"),
+  p31B_cR_mse + theme(legend.position="none"),
+  p31C_cR_mse+ theme(legend.position="none"),
+  p31D_cR_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_cR_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_3censReg_mse_vary_beta <- plot_grid(p31_make_grid_3censReg_mse_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk26b2}
+
+p31_grid_plot_3censReg_mse_vary_beta
+```
+
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk26c1, eval=FALSE}
+p31A_S_mse <- plot_all_subst_mse_beta002_sd03_cprop03_niter10000
+p31B_S_mse <- plot_all_subst_mse_beta004_sd03_cprop03_niter10000
+p31C_S_mse <- plot_all_subst_mse_beta008_sd03_cprop03_niter10000
+p31D_S_mse <- plot_all_subst_mse_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_subst_mse_vary_beta <- plot_grid(
+  p31A_S_mse + theme(legend.position="none"),
+  p31B_S_mse + theme(legend.position="none"),
+  p31C_S_mse+ theme(legend.position="none"),
+  p31D_S_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_S_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_subst_mse_vary_beta <- plot_grid(p31_make_grid_subst_mse_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk26c2}
+p31_grid_plot_subst_mse_vary_beta
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk26d1, eval=FALSE}
+p31A_all_mse <- plot_all_mse_beta002_sd03_cprop03_niter10000
+p31B_all_mse <- plot_all_mse_beta004_sd03_cprop03_niter10000
+p31C_all_mse <- plot_all_mse_beta008_sd03_cprop03_niter10000
+p31D_all_mse <- plot_all_mse_beta016_sd03_cprop03_niter10000
+
+# arrange the three plots in a single row
+p31_make_grid_all_mse_vary_beta <- plot_grid(
+  p31A_all_mse + theme(legend.position="none"),
+  p31B_all_mse + theme(legend.position="none"),
+  p31C_all_mse+ theme(legend.position="none"),
+  p31D_all_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("beta = -0.02", "beta = -0.04", "beta = -0.08", "beta = -0.16"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_31 <- get_legend(
+  p31A_all_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p31_grid_plot_all_mse_vary_beta <- plot_grid(p31_make_grid_all_mse_vary_beta, legend_31, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk26d2}
+p31_grid_plot_all_mse_vary_beta
+```
+
+
+## Predictions for different values of sd28vs153
+
+For all our predictions in this section, these parameters are fixed: $cprop = 0.3$,  $\beta_{A} = -0.02$, whilst $\sigma$ is given four values: 0.1, 0.3, 0.5 and 0.7 respectively. 
+
+
+We begin by showing graphs of the variance of predictions of $Y$ annual means from our chosen censoring methods.  
+
+A common feature of all these graphs is that they typically have an approximately parabolic "U" shape, with higher variance at each end of the time period than in the middle of the period.   
+
+This is in accordance with our prior expectations because this is generally the case. 
+
+
+Our first set of four graphs show the variance of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk28a, eval=FALSE}
+p32A_cR2_var <- plot_all_censReg_var_beta002_sd01_cprop03_niter10000
+p32B_cR2_var <- plot_all_censReg_var_beta002_sd03_cprop03_niter10000
+p32C_cR2_var <- plot_all_censReg_var_beta002_sd05_cprop03_niter10000
+p32D_cR2_var <- plot_all_censReg_var_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_2censReg_var_vary_sd <- plot_grid(
+  p32A_cR2_var + theme(legend.position="none"),
+  p32B_cR2_var + theme(legend.position="none"),
+  p32C_cR2_var+ theme(legend.position="none"),
+  p32D_cR2_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_cR2_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_2censReg_var_vary_sd <- plot_grid(p32_make_grid_2censReg_var_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk28b}
+p32_grid_plot_2censReg_var_vary_sd
+```
+
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively.
+
+
+```{r chunk29a, eval=FALSE}
+p32A_S_var <- plot_all_subst_var_beta002_sd01_cprop03_niter10000
+p32B_S_var <- plot_all_subst_var_beta002_sd03_cprop03_niter10000
+p32C_S_var <- plot_all_subst_var_beta002_sd05_cprop03_niter10000
+p32D_S_var <- plot_all_subst_var_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_subst_var_vary_sd <- plot_grid(
+  p32A_S_var + theme(legend.position="none"),
+  p32B_S_var + theme(legend.position="none"),
+  p32C_S_var+ theme(legend.position="none"),
+  p32D_S_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_S_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_subst_var_vary_sd <- plot_grid(p32_make_grid_subst_var_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk29b}
+p32_grid_plot_subst_var_vary_sd
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk30a, eval=FALSE}
+p32A_all_var <- plot_all_var_beta002_sd01_cprop03_niter10000
+p32B_all_var <- plot_all_var_beta002_sd03_cprop03_niter10000
+p32C_all_var <- plot_all_var_beta002_sd05_cprop03_niter10000
+p32D_all_var <- plot_all_var_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_all_var_vary_sd <- plot_grid(
+  p32A_all_var + theme(legend.position="none"),
+  p32B_all_var + theme(legend.position="none"),
+  p32C_all_var+ theme(legend.position="none"),
+  p32D_all_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_all_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_all_var_vary_sd <- plot_grid(p32_make_grid_all_var_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk30b}
+p32_grid_plot_all_var_vary_sd
+```
+
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+
+```{r chunk31a, eval=FALSE}
+p32A_2censReg_bias <- plot_all_censReg_bias_beta002_sd01_cprop03_niter10000
+p32B_2censReg_bias <- plot_all_censReg_bias_beta002_sd03_cprop03_niter10000
+p32C_2censReg_bias <- plot_all_censReg_bias_beta002_sd05_cprop03_niter10000
+p32D_2censReg_bias <- plot_all_censReg_bias_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_2censReg_bias_vary_sd <- plot_grid(
+  p32A_2censReg_bias + theme(legend.position="none"),
+  p32B_2censReg_bias + theme(legend.position="none"),
+  p32C_2censReg_bias+ theme(legend.position="none"),
+  p32D_2censReg_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_2censReg_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_2censReg_bias_vary_sd <- plot_grid(p32_make_grid_2censReg_bias_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk31b}
+p32_grid_plot_2censReg_bias_vary_sd
+```
+
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk32a, eval=FALSE}
+p32A_all_subst_bias <- plot_all_subst_bias_beta002_sd01_cprop03_niter10000
+p32B_all_subst_bias <- plot_all_subst_bias_beta002_sd03_cprop03_niter10000
+p32C_all_subst_bias <- plot_all_subst_bias_beta002_sd05_cprop03_niter10000
+p32D_all_subst_bias <- plot_all_subst_bias_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_all_subst_bias_vary_sd <- plot_grid(
+  p32A_all_subst_bias + theme(legend.position="none"),
+  p32B_all_subst_bias + theme(legend.position="none"),
+  p32C_all_subst_bias+ theme(legend.position="none"),
+  p32D_all_subst_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_all_subst_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_all_subst_bias_vary_sd <- plot_grid(p32_make_grid_all_subst_bias_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk32b}
+p32_grid_plot_all_subst_bias_vary_sd
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk33a, eval=FALSE}
+p32A_all_bias <- plot_all_bias_beta002_sd01_cprop03_niter10000
+p32B_all_bias <- plot_all_bias_beta002_sd03_cprop03_niter10000
+p32C_all_bias <- plot_all_bias_beta002_sd05_cprop03_niter10000
+p32D_all_bias <- plot_all_bias_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_all_bias_vary_sd <- plot_grid(
+  p32A_all_bias + theme(legend.position="none"),
+  p32B_all_bias + theme(legend.position="none"),
+  p32C_all_bias+ theme(legend.position="none"),
+  p32D_all_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_all_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_all_bias_vary_sd <- plot_grid(p32_make_grid_all_bias_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk33b}
+p32_grid_plot_all_bias_vary_sd
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk33a, eval=FALSE}
+p32A_2censReg_mse <- plot_all_censReg_mse_beta002_sd01_cprop03_niter10000
+p32B_2censReg_mse <- plot_all_censReg_mse_beta002_sd03_cprop03_niter10000
+p32C_2censReg_mse <- plot_all_censReg_mse_beta002_sd05_cprop03_niter10000
+p32D_2censReg_mse <- plot_all_censReg_mse_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_2censReg_mse_vary_sd <- plot_grid(
+  p32A_2censReg_mse + theme(legend.position="none"),
+  p32B_2censReg_mse + theme(legend.position="none"),
+  p32C_2censReg_mse+ theme(legend.position="none"),
+  p32D_2censReg_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_2censReg_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_2censReg_mse_vary_sd <- plot_grid(p32_make_grid_2censReg_mse_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk33b}
+p32_grid_plot_2censReg_mse_vary_sd
+```
+
+
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+
+```{r chunk33a, eval=FALSE}
+p32A_all_subst_mse <- plot_all_subst_mse_beta002_sd01_cprop03_niter10000
+p32B_all_subst_mse <- plot_all_subst_mse_beta002_sd03_cprop03_niter10000
+p32C_all_subst_mse <- plot_all_subst_mse_beta002_sd05_cprop03_niter10000
+p32D_all_subst_mse <- plot_all_subst_mse_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_all_subst_mse_vary_sd <- plot_grid(
+  p32A_all_subst_mse + theme(legend.position="none"),
+  p32B_all_subst_mse + theme(legend.position="none"),
+  p32C_all_subst_mse+ theme(legend.position="none"),
+  p32D_all_subst_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_all_subst_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_all_subst_mse_vary_sd <- plot_grid(p32_make_grid_all_subst_mse_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk33b}
+p32_grid_plot_all_subst_mse_vary_sd
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk34a, eval=FALSE}
+p32A_all_mse <- plot_all_mse_beta002_sd01_cprop03_niter10000
+p32B_all_mse <- plot_all_mse_beta002_sd03_cprop03_niter10000
+p32C_all_mse <- plot_all_mse_beta002_sd05_cprop03_niter10000
+p32D_all_mse <- plot_all_mse_beta002_sd07_cprop03_niter10000
+
+# arrange the three plots in a single row
+p32_make_grid_all_mse_vary_sd <- plot_grid(
+  p32A_all_mse + theme(legend.position="none"),
+  p32B_all_mse + theme(legend.position="none"),
+  p32C_all_mse+ theme(legend.position="none"),
+  p32D_all_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("sigma = 0.1", "sigma = 0.3", "sigma = 0.5", "sigma = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_32 <- get_legend(
+  p32A_all_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p32_grid_plot_all_mse_vary_sd <- plot_grid(p32_make_grid_all_mse_vary_sd, legend_32, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk34b}
+p32_grid_plot_all_mse_vary_sd
+```
+
+
+## Predictions for different values of $cprop$
+
+For all our predictions in this section, these parameters are fixed: $\sigma = 0.5$,  $\beta_{A} = -0.02$, whilst $cprop$ is given the four values: 0.1, 0.3, 0.5 and 0.7 respectively. 
+
+We begin by showing graphs of the variance of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the variance of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.
+
+```{r chunk36, eval=FALSE}
+plot_grid(plot_all_subst_var_beta002_sd05_cprop01_niter10000, plot_all_subst_var_beta002_sd05_cprop03_niter10000, plot_all_subst_var_beta002_sd05_cprop05_niter10000, plot_all_subst_var_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below. 
+
+```{r chunk37, eval=FALSE}
+plot_grid(plot_all_var_beta002_sd05_cprop01_niter10000, plot_all_var_beta002_sd05_cprop03_niter10000, plot_all_var_beta002_sd05_cprop05_niter10000, plot_all_var_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk38, eval=FALSE}
+plot_grid(plot_all_censReg_bias_beta002_sd05_cprop01_niter10000, plot_all_censReg_bias_beta002_sd05_cprop03_niter10000, plot_all_censReg_bias_beta002_sd05_cprop05_niter10000, plot_all_censReg_bias_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk39, eval=FALSE}
+plot_grid(plot_all_subst_bias_beta002_sd05_cprop01_niter10000, plot_all_subst_bias_beta002_sd05_cprop03_niter10000, plot_all_subst_bias_beta002_sd05_cprop05_niter10000, plot_all_subst_bias_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk40a, eval=FALSE}
+plot_grid(plot_all_bias_beta002_sd05_cprop01_niter10000, plot_all_bias_beta002_sd05_cprop03_niter10000, plot_all_bias_beta002_sd05_cprop05_niter10000, plot_all_bias_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk40b, eval=FALSE}
+plot_grid(plot_all_censReg_mse_beta002_sd05_cprop01_niter10000, plot_all_censReg_mse_beta002_sd05_cprop03_niter10000, plot_all_censReg_mse_beta002_sd05_cprop05_niter10000, plot_all_censReg_mse_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk40c, eval=FALSE}
+plot_grid(plot_all_subst_mse_beta002_sd05_cprop01_niter10000, plot_all_subst_mse_beta002_sd05_cprop03_niter10000, plot_all_subst_mse_beta002_sd05_cprop05_niter10000, plot_all_subst_mse_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk40d, eval=FALSE}
+plot_grid(plot_all_mse_beta002_sd05_cprop01_niter10000, plot_all_mse_beta002_sd05_cprop03_niter10000, plot_all_mse_beta002_sd05_cprop05_niter10000, plot_all_mse_beta002_sd05_cprop07_niter10000, labels = "AUTO")
+```
+
+
+
+
+
+
+
+```{r chunk35a, eval=FALSE}
+p33A_cR2_var <- plot_all_censReg_var_beta002_sd05_cprop01_niter10000
+p33B_cR2_var <- plot_all_censReg_var_beta002_sd05_cprop03_niter10000
+p33C_cR2_var <- plot_all_censReg_var_beta002_sd05_cprop05_niter10000
+p33D_cR2_var <- plot_all_censReg_var_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_2censReg_var_vary_cprop <- plot_grid(
+  p33A_cR2_var + theme(legend.position="none"),
+  p33B_cR2_var + theme(legend.position="none"),
+  p33C_cR2_var+ theme(legend.position="none"),
+  p33D_cR2_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_cR2_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_2censReg_var_vary_cprop <- plot_grid(p33_make_grid_2censReg_var_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk35b}
+p33_grid_plot_2censReg_var_vary_cprop
+```
+
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.
+
+
+```{r chunk36a, eval=FALSE}
+p33A_S_var <- plot_all_subst_var_beta002_sd05_cprop01_niter10000
+p33B_S_var <- plot_all_subst_var_beta002_sd05_cprop03_niter10000
+p33C_S_var <- plot_all_subst_var_beta002_sd05_cprop05_niter10000
+p33D_S_var <- plot_all_subst_var_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_subst_var_vary_cprop <- plot_grid(
+  p33A_S_var + theme(legend.position="none"),
+  p33B_S_var + theme(legend.position="none"),
+  p33C_S_var+ theme(legend.position="none"),
+  p33D_S_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_S_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_all_subst_var_vary_cprop <- plot_grid(p33_make_grid_subst_var_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk36b}
+p33_grid_plot_all_subst_var_vary_cprop
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk37a, eval=FALSE}
+p33A_all_var <- plot_all_var_beta002_sd05_cprop01_niter10000
+p33B_all_var <- plot_all_var_beta002_sd05_cprop03_niter10000
+p33C_all_var <- plot_all_var_beta002_sd05_cprop05_niter10000
+p33D_all_var <- plot_all_var_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_all_var_vary_cprop <- plot_grid(
+  p33A_all_var + theme(legend.position="none"),
+  p33B_all_var + theme(legend.position="none"),
+  p33C_all_var+ theme(legend.position="none"),
+  p33D_all_var + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_all_var + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_all_var_vary_cprop <- plot_grid(p33_make_grid_all_var_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk37b}
+p33_grid_plot_all_var_vary_cprop
+```
+
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+
+```{r chunk38a, eval=FALSE}
+p33A_cR2_bias <- plot_all_censReg_bias_beta002_sd05_cprop01_niter10000
+p33B_cR2_bias <- plot_all_censReg_bias_beta002_sd05_cprop03_niter10000
+p33C_cR2_bias <- plot_all_censReg_bias_beta002_sd05_cprop05_niter10000
+p33D_cR2_bias <- plot_all_censReg_bias_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_2censReg_bias_vary_cprop <- plot_grid(
+  p33A_cR2_bias + theme(legend.position="none"),
+  p33B_cR2_bias + theme(legend.position="none"),
+  p33C_cR2_bias+ theme(legend.position="none"),
+  p33D_cR2_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_cR2_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_2censReg_bias_vary_cprop <- plot_grid(p33_make_grid_2censReg_bias_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk38b}
+p33_grid_plot_2censReg_bias_vary_cprop
+```
+
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk39a, eval=FALSE}
+p33A_all_subst_bias <- plot_all_subst_bias_beta002_sd05_cprop01_niter10000
+p33B_all_subst_bias <- plot_all_subst_bias_beta002_sd05_cprop03_niter10000
+p33C_all_subst_bias <- plot_all_subst_bias_beta002_sd05_cprop05_niter10000
+p33D_all_subst_bias <- plot_all_subst_bias_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_all_subst_bias_vary_cprop <- plot_grid(
+  p33A_all_subst_bias + theme(legend.position="none"),
+  p33B_all_subst_bias + theme(legend.position="none"),
+  p33C_all_subst_bias+ theme(legend.position="none"),
+  p33D_all_subst_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_all_subst_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_all_subst_bias_vary_cprop <- plot_grid(p33_make_grid_all_subst_bias_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk39b}
+p33_grid_plot_all_subst_bias_vary_cprop
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk40a, eval=FALSE}
+p33A_all_bias <- plot_all_bias_beta002_sd05_cprop01_niter10000
+p33B_all_bias <- plot_all_bias_beta002_sd05_cprop03_niter10000
+p33C_all_bias <- plot_all_bias_beta002_sd05_cprop05_niter10000
+p33D_all_bias <- plot_all_bias_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_all_bias_vary_cprop <- plot_grid(
+  p33A_all_bias + theme(legend.position="none"),
+  p33B_all_bias + theme(legend.position="none"),
+  p33C_all_bias+ theme(legend.position="none"),
+  p33D_all_bias + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_all_bias + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_all_bias_vary_cprop <- plot_grid(p33_make_grid_all_bias_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk40b}
+p33_grid_plot_all_bias_vary_cprop
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk41a, eval=FALSE}
+p33A_2censReg_mse <- plot_all_censReg_var_beta002_sd05_cprop01_niter10000
+p33B_2censReg_mse <- plot_all_censReg_var_beta002_sd05_cprop03_niter10000
+p33C_2censReg_mse <- plot_all_censReg_var_beta002_sd05_cprop05_niter10000
+p33D_2censReg_mse <- plot_all_censReg_var_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_2censReg_mse_vary_cprop <- plot_grid(
+  p33A_2censReg_mse + theme(legend.position="none"),
+  p33B_2censReg_mse + theme(legend.position="none"),
+  p33C_2censReg_mse+ theme(legend.position="none"),
+  p33D_2censReg_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_2censReg_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_2censReg_mse_vary_cprop <- plot_grid(p33_make_grid_2censReg_mse_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk41b}
+p33_grid_plot_2censReg_mse_vary_cprop
+```
+
+
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+
+```{r chunk42a, eval=FALSE}
+p33A_all_subst_mse <- plot_all_subst_mse_beta002_sd05_cprop01_niter10000
+p33B_all_subst_mse <- plot_all_subst_mse_beta002_sd05_cprop03_niter10000
+p33C_all_subst_mse <- plot_all_subst_mse_beta002_sd05_cprop05_niter10000
+p33D_all_subst_mse <- plot_all_subst_mse_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_all_subst_mse_vary_cprop <- plot_grid(
+  p33A_all_subst_mse + theme(legend.position="none"),
+  p33B_all_subst_mse + theme(legend.position="none"),
+  p33C_all_subst_mse+ theme(legend.position="none"),
+  p33D_all_subst_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_all_subst_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_all_subst_mse_vary_cprop <- plot_grid(p33_make_grid_all_subst_mse_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk42b}
+p33_grid_plot_all_subst_mse_vary_cprop
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk43a, eval=FALSE}
+p33A_all_mse <- plot_all_mse_beta002_sd05_cprop01_niter10000
+p33B_all_mse <- plot_all_mse_beta002_sd05_cprop03_niter10000
+p33C_all_mse <- plot_all_mse_beta002_sd05_cprop05_niter10000
+p33D_all_mse <- plot_all_mse_beta002_sd05_cprop07_niter10000
+
+# arrange the three plots in a single row
+p33_make_grid_all_mse_vary_cprop <- plot_grid(
+  p33A_all_mse + theme(legend.position="none"),
+  p33B_all_mse + theme(legend.position="none"),
+  p33C_all_mse+ theme(legend.position="none"),
+  p33D_all_mse + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("cprop = 0.1", "cprop = 0.3", "cprop = 0.5", "cprop = 0.7"),
+  hjust = -1,
+  nrow = 2
+)
+
+legend_33 <- get_legend(
+  p33A_all_mse + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom")
+)
+
+p33_grid_plot_all_mse_vary_cprop <- plot_grid(p33_make_grid_all_mse_vary_cprop, legend_33, ncol = 1, rel_heights = c(1, .1))
+```
+
+```{r chunk43b}
+p33_grid_plot_all_mse_vary_cprop
+```
+
+
+
+
+
+
+
+
+
+
+
+## Predictions for low-low, high-low, low-high, high-high values of $\{\sigma,cprop\}$
+
+We will now use the same sets of parameter values that we used in our earlier section "Selection of censoring methods for further study".  
+
+Concretely: $\beta_{A} = -0.02$ is held fixed, whilst a "low" and a "high" value for each of $cprop$ and $\sigma$ are used.  
+
+Concretely: $\{(0.1, 0.1), (0.7, 0.1), (0.1, 0.5), (0.7, 0.5)\}$ were used for $\{cprop, \sigma\}$ respectively.
+
+
+We begin by showing graphs of the variance of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the variance of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.   
+
+```{r chunk44, eval=FALSE}
+plot_grid(plot_all_censReg_var_beta002_sd01_cprop01_niter10000, plot_all_censReg_var_beta002_sd01_cprop07_niter10000, plot_all_censReg_var_beta002_sd07_cprop01_niter10000, plot_all_censReg_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.   
+
+```{r chunk45, eval=FALSE}
+plot_grid(plot_all_subst_var_beta002_sd01_cprop01_niter10000, plot_all_subst_var_beta002_sd01_cprop07_niter10000, plot_all_subst_var_beta002_sd07_cprop01_niter10000, plot_all_subst_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk46, eval=FALSE}
+plot_grid(plot_all_var_beta002_sd01_cprop01_niter10000, plot_all_var_beta002_sd01_cprop07_niter10000, plot_all_var_beta002_sd07_cprop01_niter10000, plot_all_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.      
+
+```{r chunk47, eval=FALSE}
+plot_grid(plot_all_censReg_bias_beta002_sd01_cprop01_niter10000, plot_all_censReg_bias_beta002_sd01_cprop07_niter10000, plot_all_censReg_bias_beta002_sd07_cprop01_niter10000, plot_all_censReg_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.    
+
+```{r chunk48, eval=FALSE}
+plot_grid(plot_all_subst_bias_beta002_sd01_cprop01_niter10000, plot_all_subst_bias_beta002_sd01_cprop07_niter10000, plot_all_subst_bias_beta002_sd07_cprop01_niter10000, plot_all_subst_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk49, eval=FALSE}
+plot_grid(plot_all_bias_beta002_sd01_cprop01_niter10000, plot_all_bias_beta002_sd01_cprop07_niter10000, plot_all_bias_beta002_sd07_cprop01_niter10000, plot_all_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.      
+
+```{r chunk50, eval=FALSE}
+plot_grid(plot_all_censReg_mse_beta002_sd01_cprop01_niter10000, plot_all_censReg_mse_beta002_sd01_cprop07_niter10000, plot_all_censReg_mse_beta002_sd07_cprop01_niter10000, plot_all_censReg_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.    
+
+```{r chunk51, eval=FALSE}
+plot_grid(plot_all_subst_mse_beta002_sd01_cprop01_niter10000, plot_all_subst_mse_beta002_sd01_cprop07_niter10000, plot_all_subst_mse_beta002_sd07_cprop01_niter10000, plot_all_subst_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk52, eval=FALSE}
+plot_grid(plot_all_mse_beta002_sd01_cprop01_niter10000, plot_all_mse_beta002_sd01_cprop07_niter10000, plot_all_mse_beta002_sd07_cprop01_niter10000, plot_all_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+
+
+
+```
+

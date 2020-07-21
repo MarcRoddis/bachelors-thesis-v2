@@ -1,0 +1,1155 @@
+---
+title: "Methods for processing censored data FVFV2"
+author: "Marc Roddis"
+date: "7/17/2020"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+    toc_depth: 4
+    df_print: kable
+    fig_width: 9
+    fig_height: 9
+fontsize: 12pt
+geometry: margin=1.5in
+---
+
+```{r chunk1, include=FALSE}
+library(RCurl)
+library(tidyverse)
+library(styler)
+library(gridExtra)
+library(cowplot)
+library(truncreg)
+library(truncnorm)
+library(censReg)
+load("AllTablesPredsGraphsv18e.Rdata")
+load("AllBetaTablesVarySs.RData")
+load("AllBetaTablesAll9.RData")
+load("PlotAll3CensRegVaryBetaVBM.RData")
+load("best6PredsVaryBeta.RData")
+load("PlotAll3censRegVaryBeta.RData")
+load("p31GridPlotsVaryBetaFV1.RData")
+load("p32GridPlotsVarySdFV1.RData")
+load("p33GridPlotsVaryCpropFV1.RData")
+knitr::opts_chunk$set(echo=FALSE)
+```
+
+# Introduction
+
+The Swedish National Monitoring Programme for Contaminants (SNMPC) in freshwater biota has various goals and large scope (citation needed).    
+
+Our main goal in this study was to explore the viability of alternative methodologies for parameter estimation from censored data and to compare these alternatives with the methodology used by SNMPC. 
+
+Censored data is very common in environmental chemistry so our research area has been researched extensively by others.  We will select well-regarded methods and apply these according to best practice, according to the cited works (citation needed). 
+
+At the outset, we limited the scope of our study by choosing to focus on the estimation of long-term time trends for the concentration of polychlorinated biphenyls (PCBs) in biological samples.  
+
+Our main idea was that since PCBs have similar chemical and physical properties their concentrations may be correlated such that censored measurements can be imputed using censored regression.  
+
+Our idea is supported by the SNMPC dataset since it has no censored data for CB153, whereas 34 % of the data for CB28 is censored.  
+
+More importantly, our exploratory data analysis of SNMPC data showed that CB153 and CB28 concentrations are strongly correlated.
+
+Moreover, CB153 and CB28 also show a very similar rate of decrease over the time period 2003-2017.
+
+Concretely, our idea is to impute censored CB28 values from the corresponding uncensored observations for CB153. 
+
+The resulting "imputed datasets" could then be used to obtain better parameter estimates than from the methodology currently used by SNMPC, which uses "substituted datasets" instead.  
+
+Specifically, SNMPC substitute all censored data by $\frac{LOD}{\sqrt{2}}$.
+
+## Our workflow
+
+We now present an eight-step overview of our workflow in this section.  We will give a more detailed description of steps 1-5 in the subsequent five sections.
+
+1.  Selection of a set of parameter values for the set of variable parameters $\{ \beta_{A}, \sigma, cprop\}$, and generation of the corresponding "uncensored dataset", "censored dataset", and "incomplete dataset".
+
+2.  Estimation of $\beta$, and prediction of $E(Y|A=a)$ for $a \in \{0, 1, 2, ..., 14\}$ from the uncensored dataset by simple linear regression.  
+
+Calculation of the MSE, squared-bias, and variance, of these estimates and predictions.  
+
+Tabular presentation of these results for the estimates and graphical presentation of these results for the predictions.
+
+3.  Creation of a "completed dataset" by replacing censored data using some or all of our six methods.  
+
+We will use two families of methods, in which the replacement is done by "direct substitution" and "imputation by censored regression" respectively. 
+
+The completed datasets created by different methods will be distinct.  
+
+Step 2 is then done for every completed dataset.  
+
+Step 2 is also done for the incomplete dataset for the purpose of comparison.
+
+4.  Do as in step 2, except from the censored (instead of the uncensored) dataset using censored (instead of simple linear) regression.  
+
+We call this method $\texttt{censReg0}$ because it comprises censored regression without imputation.
+
+5.  Repetition of steps 1-4 for various selections of parameter values. 
+
+6.  Discussion of all results.
+
+
+## Design and implementation for generation of our uncensored, censored, and incomplete datasets
+
+### Model design and specification
+
+We begin by performing exploratory data analysis and model fitting from datasets from the SNMPC.
+
+We do this in order to design our simulation studies to have real real-world relevance.
+
+A large dataset `pcb.csv` was provided from SNMPC.
+
+This dataset has 5056 observations of 18 variables; these variables include: measured concentrations of seven PCBs (CB28, CB53, CB101, CB118, CB138, CB153, CB180); year (1984-2017); an ID for each observation; and nine other variables such as species and age.    
+
+
+Our exploratory data analysis showed that 
+
+1. The most recent 15-year period 2003-2017 had sufficient relevant data, so we will focus solely on this time period.
+
+2. It is reasonable to model the observed pcb concentrations as log-normal distributed.
+
+3. The data for CB153 had no censored values, whereas CB28 data had the highest proportion of censored values.  
+
+This proportion was 0.34.
+
+4. Species is clearly a confounding variable for the association between CB153 and CB28, so we will focus solely on herring (since this was the species for which there were most observations).  
+
+No other variable showed clear evidence for confounding.
+
+From this basis, we create our test dataset from the original dataset `pcb.csv` by omitting all missing values of `CB28` and `CB153`, removing all observations except those from herring species, removing all observations prior to 2003, re-indexing 2003 as "year zero", removing all variables except `YEAR`, `CB28` and `CB153`, and omitting all censored observations. 
+
+We fit linear regression models to our test dataset for $y=CB28, x=CB153$ and for $y=log(CB28), x=log(CB153)$; the adjusted R-squared values were 0.93 and 0.96 respectively.  
+
+Based on this, we decide we will use logarithmised concentrations throughout, which we will model as normally distributed.
+
+We have three variables $log(CB28)$,  $log(CB153)$, and $YEAR$; we will denote these as $Y$, $X$ and $A$ respectively, throughout the rest of our work.  
+
+We make the key observation that $Y$ and $X$ are strongly correlated in our test dataset, which means that our key idea of using censored regression for $Y$ on $X$ to make imputations for censored $Y$ values is plausible.
+
+We also fit a model to our test dataset for the regression $X$ on $A$, which gave
+
+$$E(X|A) = -2.91 - 0.02A$$
+
+
+the corresponding fitted model for the regression $Y$ on $X$ is $$E(Y|X) = -3.18 + 0.79X$$
+
+the residual standard error was equal to $0.1$ from both models.
+
+### Generation of uncensored datasets
+
+Following the aforementioned model, for every iteration we generate our uncensored datasets as follows:  
+
+1.  We will also always simulate a 15-year period; we will use $A \in \{0, 1, 2, ..., 14\}$ to denote year.
+
+2. For every year, we will generate the same number of observations for $Y$ and $X$, we will call this number the sample size $N$.   
+
+3. We generate all $x_{i}$ from  $$x_{i} = -2.91 - \beta_{A}a_{i} + e_{i}$$ 
+
+where $i \in \{1, 2, ..., N\}$ denotes the ith observation, and the noise is modeled as normally distributed with $mean=0$ and $variance=0.1^{2}$, i.e. $e_{i} \sim N(0, 0.1^{2})$.
+
+We will be interested in evaluating our methods for various values of $\beta_{A}$, so this will be a variable parameter for our simulations.
+
+4. We generate all $y_{i}$ from $$y_{i} = -3.18 + 0.79x_{i} + \epsilon_{i}$$ 
+
+where $\epsilon_{i} \sim N(0, \sigma^{2})$.
+
+Every resulting uncensored dataset has $N$ observations for $X$ and $Y$ for every year, so in total there are $15N$ observations, where each observation is for the three variables $Y$, $X$, and $A$. 
+
+### Generation of censored datasets
+
+We generate every censored dataset from the corresponding uncensored dataset by using $y_{i}^{*}$ instead of $y_{i}$, where $y_{i}^{*}$ refers to the ith observation prior to it being observed.
+
+We determine $LOD$ by censoring a fixed proportion, which we denote as $cprop$, of all observed $y_{i}$ values.
+
+This means every censored dataset that we generate has $15N \times cprop$ censored $y_{i}$, and $15N \times (1-cprop)$ uncensored $y_{i}$ observations.
+
+Concretely, $LOD = cprop \times 100$th percentile of all $y_{i}$ values, which means that the value of $LOD|cprop$ is constant and thus independent of $A$.
+
+This means that after $y_{i}$ has been observed and left-censoring at $LOD$ has been applied, we have  $y_{i}= y_{i}^{*} \text{   if   } y_{i}^{*}>LOD$ and $y_{i} = LOD$ if $y_{i}^{*} \leq LOD$ for every censored dataset.
+
+### Generation of incomplete datasets
+
+We then generate the incomplete dataset by removing all $y_{i}$ such that $y_{i} = LOD$ from the corresponding uncensored dataset.
+
+### Selection of sample size and number of iterations
+
+Our results from preliminary experimentation indicated that the percentage error of estimates of $\beta$ was inversely proportional to the square root of the number of iterations used to generate the datasets.
+
+This percentage error was approximately $2\%$ and $0.7\%$ for 1000 and 10000 iterations, respectively.
+
+We will therefore use 1000 iterations for simulation runs where approximate results suffice, and 10000 iterations for all our other runs.
+
+Our estimates from our test dataset (which is a subset of the SNMPC dataset) for our variable parameters are $\{\beta_{A} = -0.02, \sigma = 0.1, cprop = 0.34, \text{sample size} \approx 100\}$. 
+
+We will select related parameter values for our simulations, so that our results have real real-world relevance. 
+
+We will use the parameter values $\{cprop = 0.3, \beta_{A} = -0.02, \sigma = 0.3\}$ for our first four simulation runs, for which the value of $\texttt{sample size}$ will equal 50, 25, 12, and 6, respectively.
+
+We will use these results to inform our selection of a value for $\texttt{sample size}$; we will use this fixed value for all our subsequent runs.
+
+
+### Selection of values for the variable parameters
+
+We will restrict our selection of values for $\beta_{A}$ to negative values $\beta_{A}<0$, which means that $X$ follows a decreasing trend over time (i.e as $A$ increases).
+
+This means that $Y$ also decreases with time since we use the fixed proportionality constant $0.79$ (i.e $\beta = 0.79\beta_{A}$) for generation all of our uncensored datasets.
+
+The purpose of this restriction is convenience and clarity.  
+
+The value of $\sigma$ determines the strength of correlation for the regression $Y$ on $X$.
+
+The lower the value of $\sigma$, the stronger is this correlation.
+
+We conjecture the estimates and predictions from methods using censored regression methods will be decreasingly good for increasing values of $\sigma$.  
+
+Moreover as $\sigma$ increases, the mean of the true values of the censored data decreases.  
+
+This is shown in Figure 1.
+
+(Add a figure showing a thin and a fat normal distribution each truncated at LOD)
+
+For $cprop = 0$, a normal distribution is a perfect fit for the $y_{i}^{*}$.  
+
+As $cprop$ increases, this fit is decreasingly good, whereas a truncated normal distribution (truncated at $LOD$) is a perfect fit.
+
+We therefore conjecture that censored regression followed by imputation using the expectation of the corresponding truncated normal, will give results that are increasingly good relative to those from other methods, as $cprop$ increases.
+
+
+
+
+## Estimation of $\beta$ and prediction of $E(Y|A=a)$ for $a \in \{0, 1, 2, ..., 14\}$ from the uncensored dataset by simple linear regression
+
+The main body of our work will be to evaluate various methods for the estimation of the regression coefficient $\widehat{\beta}$ for datasets containing censored values. 
+
+In this section, we will instead assume that there are no censored values, which allows us to find estimates by simple linear regression.  
+
+We will later use these estimates as the benchmark for evaluating the methods we use in the main body of our work. 
+
+Our primary goal is to find $\widehat{\beta}$, which means we will find estimates for $\beta$ where $Y_{i} = \alpha + \beta a_{i} + \varepsilon_{i}$.
+
+To specify this model, we first substitute
+
+$$x_{i} = -2.91 - \beta_{A}a_{i} + e_{i}$$
+
+into
+
+$$y_{i} = -3.18 + 0.79x_{i} + \epsilon_{i}$$
+
+which gives
+
+$$y_{i} = -3.18 + 0.79(-2.91 - \beta_{A}a_{i} + e_{i}) + \epsilon_{i}$$
+
+$$= -3.18 + 0.79-2.91 - 0.79\beta_{A}a_{i} + 0.79e_{i} + \epsilon_{i}$$
+
+$$= \alpha + \beta a_{i} + \varepsilon_{i}$$
+
+where $\alpha = -3.18 + 0.79 \times -2.91 = -5.4789$, and $\beta = 0.79\beta_{A}$. 
+
+Also $\varepsilon_{i} = 0.79e_{i} + \epsilon_{i}$, where $e_{i} \sim N(0, 0.1^{2})$ and $\epsilon_{i} \sim N(0, \sigma^{2})$. 
+
+We obtain the parameter estimates $\{\widehat {\alpha }, \widehat {\beta }\}$ by fitting a linear model using the $\texttt{lm()}$ method in R.
+
+We obtain the prediction of $E(Y|A=a)$ for $a \in \{0, 1, 2, ..., 14\}$ from $$E(Y|A=a) = \widehat {\alpha } + \widehat {\beta } a$$
+
+We calculate and present the MSE, squared-bias, and variance of our estimates and annual predictions.
+
+
+
+## Creation of a "completed dataset" by replacing censored data using some or all of our six methods
+
+We view every censored observation as having a true but unknown value within the interval $[0, LOD]$.
+
+Our goal is to replace all such unknown values with a known value such that the resulting values are as close to the true values as possible.
+
+The most straightforward way to this is by substitution, which means that all censored values from a censored dataset are substituted by the same fixed value, which is a fraction of $LOD$.  
+
+The monitoring program that motivates our work uses substitution by $\frac{LOD}{\sqrt{2}}$, which is the most commonly used value based in the research literature cited in this report.  
+
+The second most commonly used value is $\frac{LOD}{2}$.  
+
+The largest possible value that can be used for substitution is $LOD$, since all of the censored values  are known to lie within the interval $[0, LOD]$.
+
+Our three substitution methods will use substitution by either $LOD$, $\frac{LOD}{\sqrt{2}}$ or $\frac{LOD}{2}$; we name them  $\texttt{subst1}$, $\texttt{subst2}$, and $\texttt{subst4}$, respectively. 
+
+Our notation is based on the fact that $LOD = \frac{LOD}{1}$, and that $2 = \sqrt{4}$ and $1 = \sqrt{1}$, respectively. 
+
+Our rationale for choosing these three methods is that since $\frac{LOD}{2} < \frac{LOD}{\sqrt{2}} < LOD$ we can compare results from the $\texttt{subst2}$ method that SNMPC uses with two alternative substitution methods, which use substitution by lower and higher values, respectively.
+
+However, such substitution methods are limited since they do not use observations from other variables of the dataset.
+
+Our conjecture is that we can use censored regression to impute censored $y_i$ values from the corresponding uncensored $x_i$ values, thus leveraging the strong correlation between the $Y$ and $X$. 
+
+We call our main imputation by censored regression method $\texttt{censReg1}$ , because it is based on a censored regression model with $1$ predictor variable $X$, as described in the following section.  
+
+###  Creation of completed datasets by censored regression by our main method $\texttt{censReg1}$
+
+Each observation $y_{i}^{*}$ is from a normal distribution with mean  $\mu_{i_{X}} = \alpha_{X} + \beta_{X}x_{i}$ and variance $\sigma^{2}$, which has pdf
+
+$$f(y_{i}^{*}) = \frac{ exp[(-1/2)( (y_{i}^{*}-\mu_{i_{X}}) / \sigma)^{2}]}{\sigma\sqrt{2\pi} } $$
+
+which we can write as 
+
+$$f(y_{i}^{*}) = \frac{\phi( (y_{i}^{*}-\mu_{i_{X}}) / \sigma) } {\sigma } $$
+
+
+where $\phi$ is the pdf of a normal distribution with $mean=0$ and $variance=1$.
+
+The probability that $y_{i}^{*}$ is censored equals 
+
+$$P(y_{i}^{*} \leq LOD) = \Phi( (LOD-\mu) / \sigma)$$
+
+where $\Phi$ is the cdf of a normal distribution with $mean=0$ and $variance=1$.
+
+Every $y_{i}^{*}$ is either censored or not, so we will use the indicator variable $I=1$ for censored, and $I=0$ for not censored.  
+
+Moreover, we assume that $y_{i}$ are all independent, which means that the joint likelihood over all observations is the product of the density functions for all  $y_{i}$.  
+
+This gives us the likelihood function L
+
+$$ L = \prod_{i=1}^{A}\Bigg[[ (1/\sigma) \phi( (y_{i}-\mu_{i_{X}}) / \sigma) ] ^{1-I} \times \Phi( (LOD-\mu_{i_{X}}) / \sigma)^{I}\Bigg] $$
+So the log-likelihood function is 
+
+$$\log(L) = \sum_{i=1}^{A}\Bigg[(1-I) [\log( \phi( (y_{i}-\mu_{i_{X}}) / \sigma) ) - \log(\sigma)]  + I \times \log[  \Phi( (LOD-\mu_{i_{X}}) / \sigma) ]\Bigg] $$
+which equals
+
+$$\log(L) = \sum_{i=1}^{A}\Bigg[(1-I) [\log( \phi( (y_{i}-(\alpha_{X} + \beta_{X}x_{i}) ) / \sigma) ) - \log(\sigma)]$$  
+$$+ I \times \log[  \Phi( (LOD-(\alpha_{X} + \beta_{X}x_{i}) ) / \sigma) ]\Bigg] $$
+
+We will use the $\texttt{censReg()}$ function from the censReg package in R to maximise this log-likelihood function to obtain the maximum likehood estimates $\widehat \alpha_{X}$, $\widehat \beta_{X}$ and $\hat {\sigma }$.
+
+We will then perform imputation as follows.  
+
+Every censored value $y_{i}$ is substituted by the expected value of a truncated normal distribution, which we describe as originating from a normal distribution with $mean =  \widehat \mu_{i_{X}} = \widehat \alpha_{X} + \widehat \beta_{X}x_{i}$, $variance = \sigma^{2}$, and with truncation at $y = LOD$.  
+
+In our practice, we used the $\texttt{etruncnorm()}$  function from the $\texttt{truncnorm}$ R package to calculate every such expected value.   
+
+We will use the term "completed dataset" for every dataset that results from imputation or substitution. 
+
+  
+### Variations on the $\texttt{censReg1}$ method
+
+We will also use two methods that are closely related to $\texttt{censReg1}$  for the purpose of comparison; we call these methods $\texttt{censReg1naive}$ and $\texttt{censReg2}$.
+
+#### The $\texttt{censReg1naive}$ method
+
+The only difference from $\texttt{censReg1}$ in our $\texttt{censReg1naive}$ method is that the latter uses the corresponding non-truncated normal distribution rather than the truncated one.  
+
+Our conjecture is that estimates of $\beta$ from $\texttt{censReg1naive}$ will have significantly higher bias than the corresponding estimates from $\texttt{censReg1}$.
+
+Our rationale is that the censored $y_{i}$ values could be substituted by values that are higher than $LOD$, whereas the true value is known to be not higher than $LOD$.
+
+$\texttt{censReg1naive}$ is the same as $\texttt{censReg1}$ except that a non-truncated normal distribution is used in the imputation step.  
+
+We conjecture that this will result in estimates with higher bias than from $\texttt{censReg1}$.  
+
+This was done to check that we get a more biased estimate because it is possible that the imputed values are above LOD, despite the fact that the censored value are below LOD.
+
+#### The $\texttt{censReg2}$ method
+
+$\texttt{censReg2}$ uses two predictor variables $X$ and $N$.  
+
+We conjecture that using one additional redundant predictor variable will result in estimates with higher variance than from $\texttt{censReg1}$.  
+
+The mathematical formulation for this method corresponds to that presented above for $\texttt{censReg1}$, except that we model each observation $y_{i}^{*}$ as from a normal distribution with mean  $\mu_{i_{X,A}} = \alpha_{X, A} + \beta_{X}x_{i} + \beta_{A}a_{i}$ and variance $\sigma^{2}$.
+
+This means that the likelihood function for $\texttt{censReg2}$ will have the same form as that for $\texttt{censReg1}$; it will differ only in having $\mu_{i_{X,A}}$ in place of  $\mu_{i_{X}}$.
+
+Consequently, maximisation of the corresponding log-likelihood function gives the maximum likehood estimates $\widehat \alpha_{X}$, $\widehat \beta_{X}$, $\widehat \beta_{A}$ and $\hat {\sigma }$.
+
+Therefore, every censored value $y_{i}$ is substituted by the expected value of a truncated normal distribution, which we describe as originating from a normal distribution with $mean =  \widehat \mu_{i_{X,A}} = \widehat \alpha_{X} + \widehat \beta_{X}x_{i} + \widehat \beta_{A}a_{i}$, $variance = \sigma^{2}$, and with truncation at $y = LOD$. 
+
+## Estimation of $\beta$ directly from the censored dataset by censored regression by the $\texttt{censReg0}$ method
+
+This method differs from $\texttt{censReg1}$ in the choice of predictor variable for the model for the maximum likelihood estimation step.  
+
+We have seen that the $\texttt{censReg1}$ method uses $X_{i}$ as the predictor for this step.  
+
+The $\texttt{censReg0}$ method uses $A_{i}$ as the predictor instead for this step.  
+
+This method is designed to test our conjecture that since $|\beta_{X}|=0.79$ is much greater than $|\beta_{A}|$, $\texttt{censReg0}$ will result in estimates with higher variance than from $\texttt{censReg1}$.
+
+This method models each observation $y_{i}^{*}$ as from a normal distribution with mean  $$\mu_{i_{A}} = \alpha_{A} + \beta_{A}a_{i}$$ and variance $\sigma^{2}$.
+
+The same mathematical steps as in Section XXX yield the corresponding log-likelihood function
+
+$$\log(L) = \sum_{i=1}^{N}\Bigg[(1-I) [\log( \phi( (y_{i}-(\alpha_{A} + \beta_{A}a_{i}) ) / \sigma) ) - \log(\sigma)]$$  
+$$+ I \times \log[  \Phi( (LOD-(\alpha_{A} + \beta_{A}a_{i}) ) / \sigma) ]\Bigg] $$
+
+Thus the parameter estimates $\{\widehat \alpha_{A}, \widehat \beta_{A}\}$ are found directly from the maximisation of the corresponding log-likelihood function, without any imputation step.
+
+We obtain the prediction of $E(Y|A=a)$ for $a \in \{0, 1, 2, ..., 14\}$ from $$E(Y|A=a) = \widehat {\alpha } + \widehat {\beta } a$$
+
+We calculate and present the MSE, squared-bias, and variance of the estimates of $\widehat {\beta}$ and the annual predictions $E(Y|A=a)$ for $a \in \{0, 1, 2, ..., 14\}$.
+
+## Summary
+
+We will generate an uncensored dataset, a censored dataset, and an incomplete dataset.
+
+Finding estimates and predictions from the uncensored dataset will serve as the benchmark.  
+
+We call this method $\texttt{best}$; the corresponding method from the incomplete dataset is called $\texttt{omit}$.
+
+All of our other methods will be applied to the censored dataset:
+
+The methods in which censored $y_{i}$ are replaced by $LOD$, $\frac{LOD}{\sqrt{2}}$ or $\frac{LOD}{2}$ are $\texttt{subst1}$, $\texttt{subst2}$, and $\texttt{subst4}$, respectively.
+
+The methods in which censored $y_{i}$ are imputed by the censored regressions $Y$ on $X$, or $Y$ on both $X$ and $A$ are called $\texttt{censReg1}$ and $\texttt{censReg2}$, respectively.
+
+The variant of $\texttt{censReg1}$ which imputes using the expectation of a non-truncated instead of a truncated normal distribution is called $\texttt{censReg1naive}$.
+
+The method in which censored $y_{i}$ are estimated directly (without imputation) from the censored regression $Y$ on $A$ is called $\texttt{censReg0}$.
+
+In the following two chapters we present the results from using these methods to estimate $\beta$, and to predict the annual means $E(Y|A=a)$. 
+
+
+\newpage
+
+# Determination of appropriate sample size and methodologies for subsequent in-depth investigation 
+
+## Results for the estimation of $\widehat {\beta }$
+
+We got the parameter values $\{cprop = 0.3, \beta_{A} = -0.02, \sigma = 0.1\}$ based on our estimates from our exploratory data analysis on our test dataset. 
+
+### Evaluation of methods for smaller sample sizes
+
+We will first  obtain results from datasets with different sample sizes in order to decide an appropriate sample size for all our subsequent work.    
+
+Our real dataset has approximately 100 observations per year for $Y$ and $X$ from herring in years 2003-2017.  
+
+However these observations are from various locations and have differences for various other variables such as age, fat-percentage etc., which means that any statistical analysis which controls for such variables would have a smaller sample size.  
+
+We will test sample sizes that differ by a factor of 2:  we do this by generating datasets by simulation using 10000 iterations, with sample sizes 50, 25, 12 and 6 respectively.
+
+Since our estimate $\sigma = 0.1$ is from the test dataset for which $mean(sample size) \approx 100$ and we wish to simulate smaller samples sizes, we choose a higher value for $\sigma$ whilst leaving the other parameter values unchanged.  
+
+This means that we will perform four simulations, all of which run for 10000 iterations and use parameters $\{cprop = 0.3, \beta_{A} = -0.02, \sigma = 0.3\}$, whilst the value of $\texttt{sample size}$ equals 50, 25, 12, and 6 for simulations 1-4, respectively.  
+
+The MSE, squared-bias, and variance of the estimates of $\beta$ from all three substitution methods $\texttt{subst1, subst2, subst4}$, all three imputation by censored regression methods $\texttt{censReg1, censReg1naive, censReg2}$, the $\texttt{censReg0}$ method for these four simulations are shown in the four tables below.  
+
+We also show in each table the result from our $\texttt{best}$ method which we use as our benchmark.  
+
+We display all values as $10^{7}$ times bigger than the actual values (to make them easier to read and compare).  
+
+```{r chunk10a2a, eval=FALSE}
+
+beta_table_all9_cprop03_beta002_ss50_sd03 <- beta_table_all11_cprop03_beta002_ss50_sd03[1:9,]
+beta_table_all9_cprop03_beta002_ss25_sd03_niter10000 <- beta_table_all11_cprop03_beta002_ss25_sd03_niter10000[1:9,]
+beta_table_all9_cprop03_beta002_ss12_sd03_niter10000 <- beta_table_all11_cprop03_beta002_ss12_sd03_niter10000[1:9,]
+beta_table_all9_cprop03_beta002_ss6_sd03_niter10000 <- beta_table_all11_cprop03_beta002_ss6_sd03_niter10000[1:9,]
+
+
+```
+
+
+```{r chunk10a2b, eval=FALSE}
+round(beta_table_all9_cprop03_beta002_ss50_sd03*10^7, 3)
+round(beta_table_all9_cprop03_beta002_ss25_sd03_niter10000*10^7, 3)
+round(beta_table_all9_cprop03_beta002_ss12_sd03_niter10000*10^7, 3)
+round(beta_table_all9_cprop03_beta002_ss6_sd03_niter10000*10^7, 3)
+
+```
+
+The bias from simulations with sample sizes 50, 25, 12, and 6 are shown in the columns of the following table.
+
+```{r chunk10a3}
+bias_all9_ss_df <- bias_all_ss_df[1:9,]
+colnames(bias_all9_ss_df) <- c("ss50Bias", "ss25Bias", "ss12Bias", "ss6Bias")
+round(bias_all9_ss_df*(10^7), 2)
+```
+
+
+The following table below is the same as the previous one, except that it shows the variance of the estimates. 
+
+```{r chunk10b2}
+variance_all9_ss_df <- variance_all_ss_df[1:9,]
+colnames(variance_all9_ss_df) <- c("ss50Var", "ss25Var", "ss12Var", "ss6Var")
+round(variance_all9_ss_df*(10^7), 1)
+```
+
+Allowing for random error from using only 10000 iterations, we can conclude that the squared-bias is independent of sample size, whereas the variance is inversely proportional to sample size.  
+
+Moreover since the bias_variance decomposition $$ MSE = Bias^{2} + Variance$$ 
+
+always holds, we need not look at the MSE values for the purpose of choosing sample size.  
+
+We find in additional experiments (details not shown) that the standard error of the estimates is inversely proportional to the square root of the number of simulation iterations, so we have three factors to balance: 
+
+1. We want our results to be potentially applicable for real data.
+
+2. We want sample size to be sufficiently large to avoid MSE being dominated by variance alone.
+
+3. We want the number of iterations to be sufficiently large that our estimates have sufficiently low standard error.
+
+We therefore decide to use $sample size = 12$ for all of our subsequent experiments.
+
+
+```{r chunk12b, eval=FALSE}
+# this seems to be redundant (repeated code chunk)
+round(beta_table_all11_cprop03_beta002_ss50_sd03*10^7, 5)
+round(beta_table_all11_cprop03_beta002_ss25_sd03*10^7, 5)
+round(beta_table_all11_cprop03_beta002_ss12_sd03*10^7, 5)
+round(beta_table_all11_cprop03_beta002_ss6_sd03*10^7, 5)
+
+```
+
+### Selection of censoring methods for further study
+
+We will now use simulations with just 1000 iterations for all eight methods (and also for our reference method $\texttt{best}$) to estimate `beta28year` for four sets of parameter values: 
+
+$\beta_{A} = -0.02$ is held fixed.
+
+a "low" and a "high" value for each of $cprop$ and $\sigma$ are used.  Concretely: $\{(0.1, 0.1), (0.7, 0.1), (0.1, 0.5), (0.7, 0.5)\}$ were used for $\{(cprop, \sigma)\}$ respectively.
+
+The following four tables show the MSE, squared-bias, and variance of estimates of $\beta$ from all methods, for the four sets of parameter values, respectively.
+
+We see that there is a much bigger difference between different methods in the amount of bias than in the amount of variance.   
+
+We will therefore focus primarily on the results for bias; we will use terms such as high and low to compare the relative amount of bias from our different methods.  
+
+We see that the amount of bias:
+
+from $\texttt{best}$ serves as a reference value; a gold standard that we compare the other methods with.
+
+from `omit` is high for $\{(0.1, 0.1),(0.1, 0.5)\}$, and is very high for $\{(0.7, 0.1),(0.7, 0.5)\}$.  It makes sense that there is higher bias with higher proportion of censored values since a higher proportion of the data has been omitted.  Moreover, these generally high values are commensurate with our prior expectations (ref: Helsel's book) that $\texttt{omit}$ is a poor method, so we will not study this method further.
+
+is very high from: $\texttt{subst1}$ for $\{(0.7, 0.1),(0.7, 0.5)\}$; $\texttt{subst2}$ for $\{(0.7, 0.5)\}$; $\texttt{subst4}$ for $\{(0.1, 0.1),(0.7, 0.1)\}$.  However, all three substitution methods also have low bias for at least one set of parameter values.  This is intriguing and merits further investigation.
+
+from $\texttt{censReg1}$, $\texttt{censReg2}$, and $\texttt{censReg0}$ is very low for all four parameter value sets.
+
+from `censReg1naive` bias is significantly higher than from $\texttt{censReg1}$, $\texttt{censReg2}$, and $\texttt{censReg0}$ for all four parameter sets . This illustrates the necessity of conditioning on both $X$ value and the condition $Y \leq LOD$ by using a truncated normal distribution, and verifies the conjecture we presented in our previous chapter on mathematical theory.    
+
+Whereas $\texttt{censReg1}$ and $\texttt{censReg2}$ both do this, in contrast $\texttt{censReg1naive}$  conditions solely on the $X$ value, and thus uses a (non-truncated) normal distribution;  this results in significant bias because $Y$ values can be erroneously imputed to be higher than $LOD$.   Consequently we will not discuss $\texttt{censReg1naive}$ any further since we have already verified our conjecture.
+
+In summary, we have rejected the two methods $\texttt{omit, censReg1naive}$, so we will limit our attention to six methods for all our subsequent work: the three substitution methods $\texttt{subst1}$, $\texttt{subst2}$, and $\texttt{subst2}$, and the three censReg methods $\texttt{censReg1}$, $\texttt{censReg2}$, and $\texttt{censReg0}$.  
+
+We will use $\texttt{best}$ as our reference method throughout.
+
+```{r chunk12c1, include=FALSE}
+beta_table_all9_cprop01_beta002_ss12_sd01 <- beta_table_all11_cprop01_beta002_ss12_sd01[1:9,]
+beta_table_all9_cprop07_beta002_ss12_sd01 <- beta_table_all11_cprop07_beta002_ss12_sd01[1:9,]
+beta_table_all9_cprop01_beta002_ss12_sd05 <- beta_table_all11_cprop01_beta002_ss12_sd05[1:9,]
+beta_table_all9_cprop07_beta002_ss12_sd05 <- beta_table_all11_cprop07_beta002_ss12_sd05[1:9,]
+
+
+bias_LL_vec <- beta_table_all9_cprop01_beta002_ss12_sd01[,2]
+bias_HL_vec <- beta_table_all9_cprop07_beta002_ss12_sd01[,2]
+bias_LH_vec <- beta_table_all9_cprop01_beta002_ss12_sd05[,2]
+bias_HH_vec <- beta_table_all9_cprop07_beta002_ss12_sd05[,2]
+
+bias_LLHLLHHH_df <- data.frame(cbind(bias_LL_vec, bias_HL_vec, bias_LH_vec, bias_HH_vec))
+rownames(bias_LLHLLHHH_df) <- c("omit", "subst2", "subst1", "censReg1", "censReg2", "censReg0", "best", "subst4", "censReg1naive")
+colnames(bias_LLHLLHHH_df) <- c("Low-Low", "High-Low", "Low-High", "High-High")
+
+var_LL_vec <- beta_table_all9_cprop01_beta002_ss12_sd01[, 3]
+var_HL_vec <- beta_table_all9_cprop07_beta002_ss12_sd01[, 3]
+var_LH_vec <- beta_table_all9_cprop01_beta002_ss12_sd05[, 3]
+var_HH_vec <- beta_table_all9_cprop07_beta002_ss12_sd05[, 3]
+
+var_LLHLLHHH_df <- data.frame(cbind(var_LL_vec, var_HL_vec, var_LH_vec, var_HH_vec))
+rownames(var_LLHLLHHH_df) <- c("omit", "subst2", "subst1", "censReg1", "censReg2", "censReg0", "best", "subst4", "censReg1naive")
+colnames(var_LLHLLHHH_df) <- c("Low-Low", "High-Low", "Low-High", "High-High")
+```
+
+The following table shows the bias from each method for our low-low, high-low, low-high, and high-high combinations of values for $cprop$ and $\sigma$, respectively.
+
+```{r chunk12c2a}
+round(bias_LLHLLHHH_df*10^7, 2)
+
+# round(beta_table_all9_cprop01_beta002_ss12_sd01*100000, 5)
+# round(beta_table_all9_cprop07_beta002_ss12_sd01*100000, 5)
+# round(beta_table_all9_cprop01_beta002_ss12_sd05*100000, 5)
+# round(beta_table_all9_cprop07_beta002_ss12_sd05*100000, 5)
+```
+
+The following table shows the variance from each method for our low-low, high-low, low-high, and high-high combinations of values for $cprop$ and $\sigma$, respectively.
+
+```{r chunk12c2b}
+round(var_LLHLLHHH_df*10^7, 2)
+```
+
+
+\newpage
+
+# Evaluation of methods for various values of $\beta_{A}$
+
+## Estimation of $\beta$
+
+We will now focus our six chosen methods $\texttt{subst1}$, $\texttt{subst2}$, $\texttt{subst4}$, $\texttt{censReg1}$, $\texttt{censReg2}$, and $\texttt{censReg0}$.  
+
+We will use these methods to estimate $\beta$ from four simulations that each run for 10000 iterations, using these same parameter values $\{cprop = 0.3, \sigma = 0.3\}$ as before.  
+
+We will use the four parameter values $\{-0.02, -0.04, -0.08, -0.16\}$ for $\beta_{A}$ in these four simulations, respectively.  
+
+The results from these simulations are shown in the four tables below.
+
+We see that for these parameters value sets, censReg method give estimates that have much lower bias, in general.   
+
+The $\texttt{subst1}$ method is designed as a reference that gives biased estimates, since it substitutes $Y$ values that are observed to be below $LOD$ with the $LOD$ value itself, so the substituted values will never be smaller than the real values.  
+
+Moreover, we have chosen to maintain a constant LOD level for all years of the same dataset.   
+
+We are also always using the fixed value $\alpha_{A}= -2.91$, and a variable but always negative parameter value for $\beta_{A}$. 
+
+This means that the $Y$ values decrease faster with years for larger values of $|\beta_{A}|$.  
+
+This all means that it is an inevitable consequence of our design that the bias from $\texttt{subst1}$ increases as $|\beta_{A}|$ increases, which is precisely what these results show.    
+
+
+In contrast, the bias from $\texttt{subst4}$ first increases from $|\beta_{A}| = 0.02$ to $|\beta_{A}| = 0.08$ and then decreases for $|\beta_{A}| = 0.16$.  
+
+This suggests that since  $\texttt{subst4}$ substitutes censored values with $\frac{LOD}{2}$, which are lower than the true values on average for low values of $|\beta_{A}|$ but not lower for the highest value $|\beta_{A}| = 0.16$.  
+
+This is also supported by the fact that the bias from $\texttt{subst2}$ is much lower than that from $\texttt{subst1}$ or $\texttt{subst4}$, which suggests that the real values of the censored data mostly lie between $LOD$ and $\frac{LOD}{2}$.
+
+
+Our three censored regression methods all give very similar results to one another.  
+
+The values of MSE, squared-bias and variance are very similar from all these methods for both $|\beta_{A}| = 0.08$ and $|\beta_{A}| = 0.16$.  
+
+However, for the lowest value $|\beta_{A}| = 0.02$, the variance from $\texttt{censReg1}$ is approximately $10\%$ lower than from $\texttt{censReg2}$, which is a statistically significant difference.  
+
+This fits with our prior knowledge that a more complex model generally has higher variance than the corresponding less complex one.  
+
+Moreover, we also expected that the estimates from $\texttt{censReg2}$ would improve relative to those from $\texttt{censReg1}$ as the value of $|\beta_{A}|$ increases, since the difference between these two methods is that $\texttt{censReg2}$ uses $A$ as additional predictor variable.  
+
+However, the fact that $\texttt{censReg0}$ has a higher variance than $\texttt{censReg1}$ seems puzzling in this respect, so perhaps our interpretation of model complexity is wrong is this context.
+
+
+Our prior expectation was that $\texttt{censReg0}$ would perform relatively worse compared to the other censored regression methods for larger values of $|\beta_{A}|$.  
+
+This is because we conjecture that the imputations from the predictor variables carry more information about $Y$ as $|\beta_{A}|$ increases, and $\texttt{censReg0}$ does not use imputation at all.  
+
+However, these results fail to support our conjecture here too.
+
+
+If we now compare the best performing models from each category, i.e. $\texttt{subst2}$ and $\texttt{censReg1}$, we see that $\texttt{censReg1}$ has much lower bias for all parameter values.  
+
+However, MSE for $\texttt{subst2}$ is lower for one of the values, $|\beta_{A}|$ = 0.08.  
+
+In conclusion, we can say that $\texttt{censReg1}$ gives better estimates than $\texttt{subst2}$ for most, but not necessarily all, values of $|\beta_{A}|$.
+
+
+```{r chunk13a, include=FALSE}
+
+# round(beta_table_key7_cprop03_beta002_ss12_sd03_niter10000*100000, 4)
+# round(beta_table_key7_cprop03_beta004_ss12_sd03_niter10000*100000, 4)
+# round(beta_table_key7_cprop03_beta008_ss12_sd03_niter10000*100000, 4)
+# round(beta_table_key7_cprop03_beta016_ss12_sd03_niter10000*100000, 4)
+
+bias_beta002_vec <- beta_table_key7_cprop03_beta002_ss12_sd03_niter10000[,2]
+bias_beta004_vec <- beta_table_key7_cprop03_beta004_ss12_sd03_niter10000[,2]
+bias_beta008_vec <- beta_table_key7_cprop03_beta008_ss12_sd03_niter10000[,2]
+bias_beta016_vec <- beta_table_key7_cprop03_beta016_ss12_sd03_niter10000[,2]
+
+bias_vary_beta_df <- data.frame(cbind(bias_beta002_vec, bias_beta004_vec, bias_beta008_vec, bias_beta016_vec))
+rownames(bias_vary_beta_df) <- c("subst1", "subst2", "subst4", "censReg1", "censReg2", "censReg0", "best")
+colnames(bias_vary_beta_df)  <- c("-0.02", "-0.04", "-0.08", "-0.16")
+
+var_beta002_vec <- beta_table_key7_cprop03_beta002_ss12_sd03_niter10000[,3]
+var_beta004_vec <- beta_table_key7_cprop03_beta004_ss12_sd03_niter10000[,3]
+var_beta008_vec <- beta_table_key7_cprop03_beta008_ss12_sd03_niter10000[,3]
+var_beta016_vec <- beta_table_key7_cprop03_beta016_ss12_sd03_niter10000[,3]
+
+var_vary_beta_df <- data.frame(cbind(var_beta002_vec, var_beta004_vec, var_beta008_vec, var_beta016_vec))
+rownames(var_vary_beta_df) <- c("subst1", "subst2", "subst4", "censReg1", "censReg2", "censReg0", "best")
+colnames(var_vary_beta_df)  <- c("-0.02", "-0.04", "-0.08", "-0.16")
+```
+
+The following table shows the bias from each method for $\beta_{A}$ equal to  $-0.02, -0.04, -0.08, -0.16$, respectively.
+
+```{r chunk13b}
+round(bias_vary_beta_df*10^7, 2)
+```
+
+The following table shows the variance from each method for $\beta_{A}$ equal to  $-0.02, -0.04, -0.08, -0.16$, respectively.
+
+```{r chunk13c}
+round(var_vary_beta_df*10^7, 2)
+```
+
+## Predictions of the annual means $E(Y|A=a)$ for different values of $\beta_{A}$
+
+All the graphs in this section will shows MSE, squared-bias, or variance on the y-axis and year on the x-axis for the simulated 15-year period.  
+
+We begin by looking at variance of predictions from our best three substitution methods and our best three censored regression methods.  
+
+We will again use $\texttt{best}$ as our gold standard.
+
+
+We will begin by using the same parameter values we used in our earlier section "Evaluation of methods for larger absolute values of `beta28year`".  
+
+These parameters are fixed: $cprop = 0.3$,  $\sigma$ = 0.3, whilst $\beta_{A}$ is given four values: -0.02, -0.04, -0.08 and -0.16 respectively. 
+
+
+We begin by showing graphs of the variance of predictions of $Y$ annual means from our chosen censoring methods.  
+
+A common feature of all these graphs is that they typically have an approximately parabolic "U" shape, with higher variance at each end of the time period than in the middle of the period.   
+
+This is in accordance with our prior expectations because this is generally the case. 
+
+
+Our first set of four graphs show the variance of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively.   
+
+```{r chunk21}
+p31_grid_plot_3censReg_var_vary_beta
+```
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk22}
+p31_grid_plot_subst_var_vary_beta
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk23}
+p31_grid_plot_all_var_vary_beta
+```
+
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively.  
+
+
+```{r chunk24}
+p31_grid_plot_3censReg_bias_vary_beta
+```
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk25}
+p31_grid_plot_subst_bias_vary_beta
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk26a}
+p31_grid_plot_all_bias_vary_beta
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively.   
+
+```{r chunk26b}
+p31_grid_plot_3censReg_mse_vary_beta
+```
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\beta_{A}$ equal to -0.02, -0.04, -0.08, -0.16, respectively. 
+
+```{r chunk26c}
+p31_grid_plot_subst_mse_vary_beta
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk26d}
+p31_grid_plot_all_mse_vary_beta
+```
+
+\newpage
+
+
+# Evaluation of methods for various values of $\sigma$
+
+## Estimation of $\beta$
+
+We will now hold $\beta_{A}$ and $cprop$ fixed at their original values ($-0.02$ and $0.3$) and investigate the effect of larger $\sigma$ values, specifically: 0.1, 0.3, 0.5, and 0.7.  
+
+
+We see again that for these parameters value sets, all three of our censored regression methods give estimates that have very much lower bias, in general.   
+
+Since these three methods all give very similar results to one another and very different results from the three substitution methods, we will again begin by interpreting the results for these two method categories separately.
+
+
+The bias from $\texttt{subst4}$ decreases greatly as the value of $\sigma$ increases, whereas the bias from $\texttt{subst1}$ is relatively independent of the value of $\sigma$.  
+
+The bias from $\texttt{subst2}$ again follows a trend intermediate between that of $\texttt{subst1}$ and $\texttt{subst4}$, since it decreases from $\sigma = 0.1$ to $\sigma = 0.5$  and then decreases for $\sigma = 0.7$.  
+
+Our interpretation is that since the censored $Y$ values lie closer on average to $LOD$ for smaller values of $\sigma$, and further away for larger values.  
+
+The low bias from $\texttt{subst4}$ for $\sigma = 0.7$ indicates that the real values for the censored data lie close to $\frac{LOD}{2}$ on average for this parameter value.
+
+
+The large gap between the uncensored $Y$ data and the $\frac{LOD}{2}$ value means that $\texttt{subst4}$ gives higher variance than all other methods for all values of $\sigma$.   
+
+Similarly, the smallest possible gap between $LOD$ and the uncensored $Y$ data explains the fact that $\texttt{subst1}$ always gives the lowest variance.  
+
+We conjecture that the same logic would also hold for other possible substitution values; the larger the gap between this value and LOD, the larger the resulting variance.
+
+
+Again, we see that the variance from $\texttt{censReg1}$ is approximately $10\%$ lower than that from $\texttt{censReg2}$ for all four values of $\sigma$.  
+
+Surprisingly the results from $\texttt{censReg2}$ and $\texttt{censReg0}$ are almost identical.  
+
+Is this a bug?
+
+
+In conclusion, substitution methods give much higher bias than censored regression methods.  
+
+Moreover, all three censored regression methods gave lower MSE than all three substitution methods for both $\sigma = 0.1$ and $\sigma = 0.3$.  
+
+However, the variance from censored regression methods increases faster than from substitution methods as $\sigma$ increases; in fact for higher values of $\sigma$, $\texttt{subst1}$ and $\texttt{subst2}$ gave the lowest and second lowest MSE values, respectively.  
+
+This relative failure of censored regression methods for relatively high values of $\sigma$ makes sense, here is our explanation:   
+
+A higher $\sigma$ value means that the correlation between $Y$ and $X$ is weaker, which results in less accurate imputation by $\texttt{censReg1}$ and $\texttt{censReg2}$, since the accuracy of imputation by these methods relies on the strength of correlation between $Y$ and $X$.
+
+```{r chunk14a, include=FALSE}
+
+# round(beta_table_key7_cprop03_beta002_ss12_sd01_niter10000*100000, 4)
+# round(beta_table_key7_cprop03_beta002_ss12_sd03_niter10000*100000, 4)
+# round(beta_table_key7_cprop03_beta002_ss12_sd05_niter10000*100000, 4)
+# round(beta_table_key7_cprop03_beta002_ss12_sd07_niter10000*100000, 4)
+
+
+bias_sd01_vec <- beta_table_key7_cprop03_beta002_ss12_sd01_niter10000[,2]
+bias_sd03_vec <- beta_table_key7_cprop03_beta002_ss12_sd03_niter10000[,2]
+bias_sd05_vec <- beta_table_key7_cprop03_beta002_ss12_sd05_niter10000[,2]
+bias_sd07_vec <- beta_table_key7_cprop03_beta002_ss12_sd07_niter10000[,2]
+
+bias_vary_sd_df <- data.frame(cbind(bias_sd01_vec, bias_sd03_vec, bias_sd05_vec, bias_sd07_vec))
+rownames(bias_vary_sd_df) <- c("subst1", "subst2", "subst4", "censReg1", "censReg2", "censReg0", "best")
+colnames(bias_vary_sd_df)  <- c("0.1", "0.3", "0.5", "0.7")
+
+var_sd01_vec <- beta_table_key7_cprop03_beta002_ss12_sd01_niter10000[,3]
+var_sd03_vec <- beta_table_key7_cprop03_beta002_ss12_sd03_niter10000[,3]
+var_sd05_vec <- beta_table_key7_cprop03_beta002_ss12_sd05_niter10000[,3]
+var_sd07_vec <- beta_table_key7_cprop03_beta002_ss12_sd07_niter10000[,3]
+
+var_vary_sd_df <- data.frame(cbind(var_sd01_vec, var_sd03_vec, var_sd05_vec, var_sd07_vec))
+rownames(var_vary_sd_df) <- c("subst1", "subst2", "subst4", "censReg1", "censReg2", "censReg0", "best")
+colnames(var_vary_sd_df)  <- c("0.1", "0.3", "0.5", "0.7")
+
+```
+
+The following table shows the bias from each method for $\sigma$ equal to  $0.1, 0.3, 0.5, 0.7$, respectively.
+
+```{r chunk14b}
+round(bias_vary_sd_df*10^7, 2)
+```
+
+The following table shows the variance from each method for $\sigma$ equal to  $0.1, 0.3, 0.5, 0.7$, respectively.
+
+```{r chunk14c}
+round(var_vary_sd_df*10^7, 2)
+```
+
+## Predictions for different values of $\sigma$
+
+For all our predictions in this section, these parameters are fixed: $cprop = 0.3$,  $\beta_{A} = -0.02$, whilst $\sigma$ is given four values: 0.1, 0.3, 0.5 and 0.7 respectively. 
+
+
+We begin by showing graphs of the variance of predictions of $Y$ annual means from our chosen censoring methods.  
+
+A common feature of all these graphs is that they typically have an approximately parabolic "U" shape, with higher variance at each end of the time period than in the middle of the period.   
+
+This is in accordance with our prior expectations because this is generally the case. 
+
+
+Our first set of four graphs show the variance of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk28}
+p32_grid_plot_2censReg_var_vary_sd
+```
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively.
+
+```{r chunk29}
+p32_grid_plot_subst_var_vary_sd
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk30}
+p32_grid_plot_all_var_vary_sd
+```
+
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk31}
+p32_grid_plot_2censReg_bias_vary_sd
+```
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk32}
+p32_grid_plot_all_subst_bias_vary_sd
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk33a}
+p32_grid_plot_all_bias_vary_sd
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk33b}
+p32_grid_plot_2censReg_mse_vary_sd
+```
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $\sigma$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk33c}
+p32_grid_plot_all_subst_mse_vary_sd
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk33d}
+p32_grid_plot_all_mse_vary_sd
+```
+
+
+\newpage
+
+
+# Evaluation of methods for various values of $cprop$
+
+## Estimation of $\beta$
+
+From our previous results, $\texttt{subst2}$ is generally the best performing substitution method and $\texttt{censReg1}$ is the best censReg method.  
+
+In the previous section, these methods gave similar MSE values for $\sigma = 0.5$, so we will fix this parameter at this value and investigate these estimation methods for four values of $cprop$: $0.1, 0.3, 0.5, 0.7$.  
+
+These $cprop$ values correspond to censoring $10\%$, $30\%$, $50\%$, and $70\%$ of the data respectively, so they correspond to decreasing values of $LOD$, which is our variable of primary interest.
+
+
+We see that $\texttt{censReg1}$ gives estimates with very low bias for all values of $cprop$, whereas the bias from $\texttt{subst2}$ increases greatly as $cprop$ increases.   
+
+We interpret this as meaning that the real $Y$ values are unchanged when LOD is lowered, which means that a higher proportion are likely to lie closer to LOD for larger values of $cprop$ which means that substituted values are increasingly biased towards being too small as $cprop$ increases.  
+
+Since $\texttt{censReg1}$ fits a model to all the data (censored and uncensored)  it maintains low bias as the $LOD$ decreases, whilst the variance remains approximately constant.   
+
+However, as a greater proportion of values are substituted for the same constant value by the $\texttt{subst2}$ method, the variance decreases because a higher proportion of the data values are identical.  
+
+
+In conclusion, $\texttt{censReg1}$ gives similar bias and variance for different values of $cprop$ whereas $\texttt{subst2}$ does not.  
+
+From $\texttt{subst2}$ the bias increases and the variance decreases as $cprop$ increases.
+
+
+```{r chunk15, eval=FALSE}
+round(beta_table_top3_cprop01_beta002_ss12_sd05_niter10000*100000, 4)
+round(beta_table_top2_cprop03_beta002_ss12_sd05_niter10000*100000, 4)
+round(beta_table_top2_cprop05_beta002_ss12_sd05_niter10000*100000, 4)
+round(beta_table_top2_cprop07_beta002_ss12_sd05_niter10000*100000, 4)
+```
+
+```{r chunk15a, include=FALSE}
+bias_cprop01_vec <- beta_table_top3_cprop01_beta002_ss12_sd05_niter10000[,2]
+bias_cprop03_vec <- beta_table_top3_cprop03_beta002_ss12_sd05_niter10000[,2]
+bias_cprop05_vec <- beta_table_top3_cprop05_beta002_ss12_sd05_niter10000[,2]
+bias_cprop07_vec <- beta_table_top3_cprop07_beta002_ss12_sd05_niter10000[,2]
+
+bias_vary_cprop_df <- data.frame(cbind(bias_cprop01_vec, bias_cprop03_vec, bias_cprop05_vec, bias_cprop07_vec))
+rownames(bias_vary_cprop_df) <- c("subst2", "censReg1",  "best")
+colnames(bias_vary_cprop_df)  <- c("0.1", "0.3", "0.5", "0.7")
+
+var_cprop01_vec <- beta_table_top3_cprop01_beta002_ss12_sd05_niter10000[,3]
+var_cprop03_vec <- beta_table_top3_cprop03_beta002_ss12_sd05_niter10000[,3]
+var_cprop05_vec <- beta_table_top3_cprop05_beta002_ss12_sd05_niter10000[,3]
+var_cprop07_vec <- beta_table_top3_cprop07_beta002_ss12_sd05_niter10000[,3]
+
+var_vary_cprop_df <- data.frame(cbind(var_cprop01_vec, var_cprop03_vec, var_cprop05_vec, var_cprop07_vec))
+rownames(var_vary_cprop_df) <- c("subst2", "censReg1",  "best")
+colnames(var_vary_cprop_df)  <- c("0.1", "0.3", "0.5", "0.7")
+```
+
+The following table shows the bias from each method for $cprop$ equal to  $0.1, 0.3, 0.5, 0.7$, respectively.
+
+```{r chunk15b}
+round(bias_vary_cprop_df*10^7, 2)
+```
+
+The following table shows the variance from each method for $cprop$ equal to  $0.1, 0.3, 0.5, 0.7$, respectively.
+
+```{r chunk15c}
+round(var_vary_cprop_df*10^7, 1)
+```
+
+
+## Predictions for different values of $cprop$
+
+For all our predictions in this section, these parameters are fixed: $\sigma = 0.5$,  $\beta_{A} = -0.02$, whilst $cprop$ is given the four values: 0.1, 0.3, 0.5 and 0.7 respectively. 
+
+We begin by showing graphs of the variance of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the variance of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk35}
+p33_grid_plot_2censReg_var_vary_cprop
+```
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.
+
+```{r chunk36}
+p33_grid_plot_all_subst_var_vary_cprop
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below. 
+
+```{r chunk37, eval=FALSE}
+p33_grid_plot_all_var_vary_cprop
+```
+
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk38}
+p33_grid_plot_2censReg_bias_vary_cprop
+```
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk39}
+p33_grid_plot_all_subst_bias_vary_cprop
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk40a}
+p33_grid_plot_all_bias_vary_cprop
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively.   
+
+```{r chunk40b}
+p33_grid_plot_2censReg_mse_vary_cprop
+```
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for $cprop$ equal to 0.1, 0.3, 0.5, 0.7, respectively. 
+
+```{r chunk40c}
+p33_grid_plot_all_subst_mse_vary_cprop
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk40d}
+p33_grid_plot_all_mse_vary_cprop
+```
+
+
+
+\newpage
+
+# Summary
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\newpage
+
+
+# Predictions for low-low, high-low, low-high, high-high values of $\{\sigma,cprop\}$
+
+We will now use the same sets of parameter values that we used in our earlier section "Selection of censoring methods for further study".  
+
+Concretely: $\beta_{A} = -0.02$ is held fixed, whilst a "low" and a "high" value for each of $cprop$ and $\sigma$ are used.  
+
+Concretely: $\{(0.1, 0.1), (0.7, 0.1), (0.1, 0.5), (0.7, 0.5)\}$ were used for $\{cprop, \sigma\}$ respectively.
+
+
+We begin by showing graphs of the variance of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the variance of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.   
+
+```{r chunk42, eval=FALSE}
+plot_grid(plot_all_censReg_var_beta002_sd01_cprop01_niter10000, plot_all_censReg_var_beta002_sd01_cprop07_niter10000, plot_all_censReg_var_beta002_sd07_cprop01_niter10000, plot_all_censReg_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the variance of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.   
+
+```{r chunk43, eval=FALSE}
+plot_grid(plot_all_subst_var_beta002_sd01_cprop01_niter10000, plot_all_subst_var_beta002_sd01_cprop07_niter10000, plot_all_subst_var_beta002_sd07_cprop01_niter10000, plot_all_subst_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk44, eval=FALSE}
+plot_grid(plot_all_var_beta002_sd01_cprop01_niter10000, plot_all_var_beta002_sd01_cprop07_niter10000, plot_all_var_beta002_sd07_cprop01_niter10000, plot_all_var_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the bias of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the bias of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.      
+
+```{r chunk45, eval=FALSE}
+plot_grid(plot_all_censReg_bias_beta002_sd01_cprop01_niter10000, plot_all_censReg_bias_beta002_sd01_cprop07_niter10000, plot_all_censReg_bias_beta002_sd07_cprop01_niter10000, plot_all_censReg_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the bias of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.    
+
+```{r chunk46, eval=FALSE}
+plot_grid(plot_all_subst_bias_beta002_sd01_cprop01_niter10000, plot_all_subst_bias_beta002_sd01_cprop07_niter10000, plot_all_subst_bias_beta002_sd07_cprop01_niter10000, plot_all_subst_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the results from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk47a, eval=FALSE}
+plot_grid(plot_all_bias_beta002_sd01_cprop01_niter10000, plot_all_bias_beta002_sd01_cprop07_niter10000, plot_all_bias_beta002_sd07_cprop01_niter10000, plot_all_bias_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+
+We will now show graphs of the MSE of predictions of $Y$ annual means from our chosen censoring methods.
+
+Our first set of four graphs show the MSE of $\texttt{censReg1}$ and $\texttt{censReg2}$ methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.      
+
+```{r chunk47b, eval=FALSE}
+plot_grid(plot_all_censReg_mse_beta002_sd01_cprop01_niter10000, plot_all_censReg_mse_beta002_sd01_cprop07_niter10000, plot_all_censReg_mse_beta002_sd07_cprop01_niter10000, plot_all_censReg_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our second set of four graphs show the MSE of $\texttt{subst1}$, $\texttt{subst2}$ and $\texttt{subst4}$  methods relative to $\texttt{best}$ method for ($\sigma$, $cprop$) equal to (0.1, 0.1), (0.1, 0.7), (0.7, 0.1) and (0.7, 0.7), respectively.    
+
+```{r chunk47c, eval=FALSE}
+plot_grid(plot_all_subst_mse_beta002_sd01_cprop01_niter10000, plot_all_subst_mse_beta002_sd01_cprop07_niter10000, plot_all_subst_mse_beta002_sd07_cprop01_niter10000, plot_all_subst_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+```
+
+Our third set of four graphs simply displays the MSE from the $\texttt{subst2}$, $\texttt{censReg1}$ and $\texttt{best}$ methods together on the same plot, which is displayed below.
+
+```{r chunk47d, eval=FALSE}
+plot_grid(plot_all_mse_beta002_sd01_cprop01_niter10000, plot_all_mse_beta002_sd01_cprop07_niter10000, plot_all_mse_beta002_sd07_cprop01_niter10000, plot_all_mse_beta002_sd07_cprop07_niter10000, labels = "AUTO")
+
+
+
+```
+
+
+
+
+
+
+
+
